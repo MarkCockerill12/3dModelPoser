@@ -1,0 +1,15 @@
+[package]
+name = "poser-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+poser-core.workspace = true
+glam.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+log.workspace = true
+gltf.workspace = true
+ufbx.workspace = true
+image.workspace = true

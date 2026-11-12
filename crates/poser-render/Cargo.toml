@@ -1,0 +1,13 @@
+[package]
+name = "poser-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+poser-core.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+anyhow.workspace = true
+log.workspace = true
+egui-wgpu.workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "poser-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "3D Model Poser - pose reference tool for artists"
+
+[[bin]]
+name = "ModelPoser"
+path = "src/main.rs"
+
+[dependencies]
+poser-core.workspace = true
+poser-io.workspace = true
+poser-rig.workspace = true
+poser-render.workspace = true
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+log.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+image.workspace = true
+rfd.workspace = true

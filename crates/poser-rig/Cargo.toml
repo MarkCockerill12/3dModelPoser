@@ -1,0 +1,12 @@
+[package]
+name = "poser-rig"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+poser-core.workspace = true
+glam.workspace = true
+anyhow.workspace = true
+log.workspace = true
+faer.workspace = true

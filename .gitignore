@@ -1,0 +1,7 @@
+/target
+/scripts
+*.pdb
+*.log
+.vscode/
+.idea/
+/dist
