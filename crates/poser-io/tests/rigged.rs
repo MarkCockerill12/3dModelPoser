@@ -54,5 +54,5 @@ fn rigged_glb_roundtrip_keeps_pose() {
     let ours = d.positions.iter().fold(f32::MIN, |a, p| a.max(p.y)) - d.positions.iter().fold(f32::MAX, |a, p| a.min(p.y));
     let (lo, hi) = back.rest_bounds();
     assert!(((hi.y - lo.y) - ours).abs() < 0.03, "{} vs {}", hi.y - lo.y, ours);
-    let _ = (fhi, flo); // FBX geometry verified against Blender 5 (scripts/bl_check.py)
+    assert!(((fhi.y - flo.y) - ours).abs() < 0.03, "fbx {} vs {}", fhi.y - flo.y, ours);
 }

@@ -149,13 +149,23 @@ pub fn load(path: &Path) -> Result<Model> {
         skel.bones.push(Bone::new(nodes[n].element.name.to_string(), p, xf(&nodes[n].local_transform)));
     }
     skel.recompute_inverse_bind();
+    let st = &scene.settings;
+    let no_conversion = st.axes.up == ufbx::CoordinateAxis::PositiveY
+        && st.axes.front == ufbx::CoordinateAxis::PositiveZ
+        && (st.unit_meters - 1.0).abs() < 1e-6;
     let mut ibm_set = vec![false; skel.len()];
     // Inverse bind = geometry->bone at bind time, re-expressed for model-space vertices
     // (we pre-transform skinned vertices by the cluster's geometry_to_world).
     for c in scene.skin_clusters.iter() {
         if let Some(b) = c.bone_node.as_ref().and_then(|b| node_to_bone.get(&(b.element.typed_id as usize))) {
             if !ibm_set[*b] {
-                skel.bones[*b].inverse_bind = mat(&c.geometry_to_bone) * mat(&c.geometry_to_world).inverse();
+                // Without space conversion the bind matrices are exact (works when bind != rest);
+                // after conversion ufbx keeps them unconverted, so fall back to geometry_to_bone.
+                skel.bones[*b].inverse_bind = if no_conversion {
+                    mat(&c.bind_to_world).inverse()
+                } else {
+                    mat(&c.geometry_to_bone) * mat(&c.geometry_to_world).inverse()
+                };
                 ibm_set[*b] = true;
             }
         }
