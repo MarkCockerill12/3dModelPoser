@@ -18,10 +18,19 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code)]
 pub enum Tool {
     Pose,
     Move,
     Rotate,
+}
+
+/// Which transform gizmo is shown (W / E-R / S like Godot and Blender).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GizmoMode {
+    Move,
+    Rotate,
+    Scale,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -64,6 +73,8 @@ pub enum Drag {
     Ik { figure: usize, kind: IkKind, effector: usize, grab_offset: Vec3, plane_point: Vec3 },
     MoveFigure { figure: usize, grab_offset: Vec3, plane_point: Vec3 },
     RotateFigure { figure: usize },
+    Handle { handle: crate::gizmo::Handle, mode: GizmoMode, last: egui::Pos2 },
+    NavGizmo { start: egui::Pos2, last: egui::Pos2, moved: bool },
     Orbit { last: egui::Pos2, pan: bool },
 }
 
@@ -118,6 +129,8 @@ pub struct Options {
     pub render_scale: f32,
     /// Rotating one spine joint bends the whole spine smoothly.
     pub spine_spread: bool,
+    /// Allow selecting every bone (face, twist, toes...) instead of only the main posing joints.
+    pub all_bones: bool,
     pub local_axes: bool,
     pub limits: bool,
     pub emulate_3button: bool,
@@ -221,6 +234,8 @@ pub struct PoserApp {
     pub inset_tex: Option<egui::TextureId>,
     pub armature: Option<crate::armature::ArmatureEdit>,
     pub photo_job: Option<crate::photo::PhotoJob>,
+    pub gizmo: GizmoMode,
+    pub hover_handle: Option<crate::gizmo::Handle>,
     /// Debug: export the viewport image after N frames, then quit.
     pub export_after: Option<(PathBuf, u32)>,
 }
@@ -262,6 +277,7 @@ impl PoserApp {
                 dual_quaternion: true,
                 render_scale: 1.0,
                 spine_spread: true,
+                all_bones: false,
                 local_axes: true,
                 limits: true,
                 emulate_3button: true,
@@ -297,6 +313,8 @@ impl PoserApp {
             inset_tex: None,
             armature: None,
             photo_job: None,
+            gizmo: GizmoMode::Rotate,
+            hover_handle: None,
             export_after: None,
         };
         let idx = app.add_human(HumanParams::default(), "Human");
@@ -314,6 +332,10 @@ impl PoserApp {
             c.set_view_axis(ViewAxis::Right);
             c.projection = Projection::Orthographic;
             app.inset = Some(c);
+        }
+        if let Ok(g) = std::env::var("POSER_GIZMO") {
+            app.gizmo = match g.as_str() { "move" => GizmoMode::Move, "scale" => GizmoMode::Scale, _ => GizmoMode::Rotate };
+            app.sel.bone = app.scene.figures[idx].model.humanoid.get(poser_core::humanoid::HumanBone::LeftLowerArm);
         }
         if std::env::var_os("POSER_LBS").is_some() {
             poser_core::skinning::DUAL_QUATERNION.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -643,6 +665,25 @@ impl PoserApp {
         let p = if flipped { p.mirrored() } else { p };
         self.apply_pose_to(f, &p, true);
         self.status = "Pose pasted".into();
+    }
+
+/// Map a clicked bone to the joint the user should pose: the nearest main humanoid bone
+    /// (face, twist, breast and toe helper bones belong to their parent joint).
+    pub fn posable_bone(&self, idx: usize, bone: usize) -> usize {
+        let m = &self.scene.figures[idx].model;
+        if self.opts.all_bones || !m.humanoid.is_valid() {
+            return bone;
+        }
+        let mut b = bone;
+        loop {
+            if m.humanoid.human_of(b).is_some() {
+                return b;
+            }
+            match m.skeleton.bones[b].parent {
+                Some(p) => b = p,
+                None => return bone,
+            }
+        }
     }
 
     pub fn limit_for(&self, idx: usize, bone: usize) -> Option<JointLimit> {

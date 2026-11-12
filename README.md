@@ -24,7 +24,8 @@ Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well o
 - **Posing**
   - **Guided mode** (Design Doll feel: anatomical limits, natural IK) or **Free mode** (Blender feel: no limits,
     Ctrl+drag or G moves any bone).
-  - Click a body part to select it, drag the rotation rings; the orange "donut" swings the elbow/knee while the
+  - Click a body part to select its joint (only the main posing joints: face/twist/toe helper bones follow
+    automatically; tick "Select every bone" for full rig access), then use the move / rotate / scale gizmos; the orange "donut" swings the elbow/knee while the
     hand/foot stays put; rotating one spine joint bends the whole spine smoothly.
   - Drag hands/feet to reach with IK, drag fingers to curl them, drag the hips with feet kept planted.
   - Pins, joint-stress highlighting, mirror / flip, copy & paste poses.
@@ -55,7 +56,9 @@ Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well o
 | 1 / 3 / 7 (Ctrl: opposite), 5 | Front / right / top view, perspective-ortho toggle |
 | 2 4 6 8, Shift+4/6 | Orbit 15 degrees, roll |
 | Home, `.` or F | Frame all, frame selected |
-| G / R / S then X Y Z, type numbers | Grab (IK) / rotate / scale with axis constraints (twice = local) |
+| W / E or R / S | Move arrows / rotation rings / scale handles (joint, or whole figure if no joint is selected) |
+| G, or R / S pressed again | Blender-style free grab / rotate / scale; then X Y Z to constrain (twice = local), type numbers |
+| Drag the corner axis widget | Orbit to any angle (click a bubble to snap to that view) |
 | R R | Trackball rotate |
 | Alt+G / Alt+R / Alt+S | Clear location / rotation / scale |
 | P, M | Pin joint, flip pose |

@@ -287,3 +287,93 @@ pub fn axis_widget(painter: &Painter, center: Pos2, cam: &Camera) -> Vec<(Pos2, 
     }
     hits
 }
+
+// ---------------------------------------------------------------------------------------------
+// Move / scale handles (Blender / Godot style W and S gizmos).
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Handle {
+    X,
+    Y,
+    Z,
+    Center,
+}
+
+pub const HANDLE_PX: f32 = 85.0;
+
+pub struct AxisHandles {
+    pub center: Vec3,
+    pub axes: [Vec3; 3],
+    pub len: f32,
+}
+
+impl AxisHandles {
+    pub fn new(center: Vec3, axes: [Vec3; 3], view: &ViewCtx) -> Self {
+        Self { center, axes, len: HANDLE_PX * view.world_per_point(center) }
+    }
+
+    pub fn axis(&self, h: Handle) -> Vec3 {
+        match h {
+            Handle::X => self.axes[0],
+            Handle::Y => self.axes[1],
+            Handle::Z => self.axes[2],
+            Handle::Center => Vec3::ZERO,
+        }
+    }
+
+    pub fn hit(&self, view: &ViewCtx, p: Pos2) -> Option<Handle> {
+        let c = view.project(self.center)?;
+        if (p - c).length() < 9.0 {
+            return Some(Handle::Center);
+        }
+        let mut best: Option<(Handle, f32)> = None;
+        for h in [Handle::X, Handle::Y, Handle::Z] {
+            if let Some(e) = view.project(self.center + self.axis(h) * self.len) {
+                let d = seg_dist(p, c, e);
+                if d < 8.0 && best.is_none_or(|b| d < b.1) {
+                    best = Some((h, d));
+                }
+            }
+        }
+        best.map(|b| b.0)
+    }
+
+    /// World distance along the handle axis for a screen-space pointer delta.
+    pub fn axis_delta(&self, view: &ViewCtx, h: Handle, delta: egui::Vec2) -> f32 {
+        let (Some(c), Some(e)) = (view.project(self.center), view.project(self.center + self.axis(h) * self.len)) else { return 0.0 };
+        let sv = e - c;
+        if sv.length_sq() < 4.0 {
+            return 0.0;
+        }
+        delta.dot(sv) / sv.length_sq() * self.len
+    }
+
+    pub fn draw(&self, painter: &Painter, view: &ViewCtx, scale: bool, hovered: Option<Handle>, active: Option<Handle>) {
+        let Some(c) = view.project(self.center) else { return };
+        let cols = [theme::AXIS_X, theme::AXIS_Y, theme::AXIS_Z];
+        for (i, h) in [Handle::X, Handle::Y, Handle::Z].into_iter().enumerate() {
+            if active.is_some_and(|a| a != h && a != Handle::Center) {
+                continue;
+            }
+            let Some(e) = view.project(self.center + self.axis(h) * self.len) else { continue };
+            let hot = hovered == Some(h) || active == Some(h);
+            let col = if hot { Color32::from_rgb(255, 230, 120) } else { cols[i] };
+            painter.line_segment([c, e], Stroke::new(if hot { 3.5 } else { 2.5 }, col));
+            let d = (e - c).normalized();
+            let n = egui::vec2(-d.y, d.x);
+            if scale {
+                painter.rect_filled(egui::Rect::from_center_size(e, egui::vec2(10.0, 10.0)), 1.0, col);
+            } else {
+                let tip = e + d * 14.0;
+                painter.add(egui::Shape::convex_polygon(vec![tip, e + n * 6.0, e - n * 6.0], col, Stroke::NONE));
+            }
+        }
+        let hot = hovered == Some(Handle::Center) || active == Some(Handle::Center);
+        let col = if hot { Color32::from_rgb(255, 230, 120) } else { Color32::from_gray(235) };
+        if scale {
+            painter.circle_stroke(c, 7.0, Stroke::new(2.0, col));
+        } else {
+            painter.rect_stroke(egui::Rect::from_center_size(c, egui::vec2(12.0, 12.0)), 1.0, Stroke::new(2.0, col), egui::StrokeKind::Middle);
+        }
+    }
+}

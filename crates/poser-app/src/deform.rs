@@ -60,6 +60,10 @@ fn bone_weights(mesh: &Mesh, bone: usize, include: &[bool]) -> Vec<f32> {
 impl DeformCache {
     /// Bring every figure up to date. Returns true when anything changed.
     pub fn update(&mut self, scene: &Scene, selected: Option<(usize, Option<usize>)>, hovered: Option<(usize, Option<usize>)>) -> bool {
+        self.update_grouped(scene, selected, hovered, true)
+    }
+
+    pub fn update_grouped(&mut self, scene: &Scene, selected: Option<(usize, Option<usize>)>, hovered: Option<(usize, Option<usize>)>, group: bool) -> bool {
         let mut changed = false;
         let ids: Vec<u64> = scene.figures.iter().map(|f| f.id).collect();
         let before = self.figs.len();
@@ -118,18 +122,46 @@ impl DeformCache {
             if c.overlay_key != key || c.overlays.len() != f.model.meshes.len() {
                 c.overlay_key = key;
                 c.overlays.clear();
+                // Helper bones (face, twist, toes) light up with their main joint.
+                let group_of = |b: usize| -> Vec<bool> {
+                    let sk = &f.model.skeleton;
+                    let hm = &f.model.humanoid;
+                    if !group || !hm.is_valid() {
+                        return vec![];
+                    }
+                    (0..sk.len())
+                        .map(|i| {
+                            if hm.human_of(i).is_some() {
+                                return false;
+                            }
+                            let mut x = i;
+                            while let Some(p) = sk.bones[x].parent {
+                                if p == b {
+                                    return true;
+                                }
+                                if hm.human_of(p).is_some() {
+                                    return false;
+                                }
+                                x = p;
+                            }
+                            false
+                        })
+                        .collect()
+                };
+                let hov_inc = hov_bone.map(group_of).unwrap_or_default();
+                let sel_inc = sel_bone.map(group_of).unwrap_or_default();
                 for mesh in &f.model.meshes {
                     let n = mesh.positions.len();
                     let mut ov = vec![Vec4::ZERO; n];
                     if let Some(b) = hov_bone.filter(|h| Some(*h) != sel_bone) {
-                        for (o, w) in ov.iter_mut().zip(bone_weights(mesh, b, &[])) {
+                        for (o, w) in ov.iter_mut().zip(bone_weights(mesh, b, &hov_inc)) {
                             if w > 0.0 {
                                 *o = Vec4::new(1.0, 1.0, 1.0, 0.18 * w);
                             }
                         }
                     }
                     if let Some(b) = sel_bone {
-                        for (o, w) in ov.iter_mut().zip(bone_weights(mesh, b, &[])) {
+                        for (o, w) in ov.iter_mut().zip(bone_weights(mesh, b, &sel_inc)) {
                             if w > 0.0 {
                                 *o = Vec4::new(1.0, 0.45, 0.05, 0.42 * w);
                             }

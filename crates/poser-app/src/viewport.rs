@@ -1,5 +1,6 @@
 //! 3D viewport: rendering, picking, posing tools and overlays.
-use crate::app::{Drag, IkKind, PoserApp, Selection, Tool};
+use crate::app::{Drag, GizmoMode, IkKind, PoserApp, Selection, Tool};
+use crate::gizmo::{AxisHandles, Handle};
 use crate::deform::DeformCache;
 use crate::gizmo::{self, Ring, RingSet, ViewCtx, screen_angle, wrap_angle};
 use crate::theme;
@@ -179,13 +180,43 @@ impl PoserApp {
         }
         let h = best?;
         let f = &self.scene.figures[h.figure];
-        let bone = hit_bone(&f.model.meshes[h.mesh], &h);
+        let bone = hit_bone(&f.model.meshes[h.mesh], &h).map(|b| self.posable_bone(h.figure, b));
         Some((h.figure, bone, h.point))
     }
 
-    pub fn ring_set(&self, view: &ViewCtx) -> Option<RingSet> {
-        let (f, b) = (self.sel.figure?, self.sel.bone?);
+    /// Move / scale handles for the selected bone (or the whole figure).
+    pub fn handle_set(&self, view: &ViewCtx) -> Option<AxisHandles> {
+        let f = self.sel.figure?;
         let fig = self.scene.figures.get(f)?;
+        let c = self.cache.figs.get(&fig.id)?;
+        match self.sel.bone {
+            Some(b) => {
+                let rs = self.ring_set(view)?;
+                let _ = (c, b);
+                // Move uses world axes (Blender default); scale follows the bone (Y = length).
+                let axes = if self.gizmo == GizmoMode::Move { [Vec3::X, Vec3::Y, Vec3::Z] } else { rs.axes };
+                Some(AxisHandles::new(rs.center, axes, view))
+            }
+            None => {
+                let r = fig.transform.rotation;
+                let axes = if self.opts.local_axes { [r * Vec3::X, r * Vec3::Y, r * Vec3::Z] } else { [Vec3::X, Vec3::Y, Vec3::Z] };
+                Some(AxisHandles::new(fig.transform.translation, axes, view))
+            }
+        }
+    }
+
+    pub fn ring_set(&self, view: &ViewCtx) -> Option<RingSet> {
+        let f = self.sel.figure?;
+        let fig = self.scene.figures.get(f)?;
+        let Some(b) = self.sel.bone else {
+            // Whole figure: rings around its origin.
+            let r = fig.transform.rotation;
+            let mut rs = RingSet::for_bone(fig.transform.translation, r, Vec3::Y, false, view);
+            if self.opts.local_axes {
+                rs.axes = [r * Vec3::X, r * Vec3::Y, r * Vec3::Z];
+            }
+            return Some(rs);
+        };
         let c = self.cache.figs.get(&fig.id)?;
         let bw = *c.pose.world.get(b)?;
         let center = c.world.transform_point3(bw.w_axis.truncate());
@@ -256,16 +287,20 @@ impl PoserApp {
         }
         if self.drag.is_none() {
             if let Some(p) = pointer {
-                let ring = if self.tool == Tool::Pose && self.opts.show_rings { self.ring_set(view).and_then(|r| r.hit(view, p)) } else { None };
-                let hover = if ring.is_some() { None } else { self.pick(view, p).map(|(f, b, _)| (f, b)) };
-                if ring != self.hover_ring || hover != self.hover {
+                let gizmo_on = self.tool == Tool::Pose && self.sel.figure.is_some();
+                let ring = if gizmo_on && self.gizmo == GizmoMode::Rotate && self.opts.show_rings { self.ring_set(view).and_then(|r| r.hit(view, p)) } else { None };
+                let handle = if gizmo_on && self.gizmo != GizmoMode::Rotate { self.handle_set(view).and_then(|h| h.hit(view, p)) } else { None };
+                let hover = if ring.is_some() || handle.is_some() { None } else { self.pick(view, p).map(|(f, b, _)| (f, b)) };
+                if ring != self.hover_ring || hover != self.hover || handle != self.hover_handle {
                     self.hover_ring = ring;
+                    self.hover_handle = handle;
                     self.hover = hover;
                     self.needs_render = true;
                 }
-            } else if self.hover.is_some() || self.hover_ring.is_some() {
+            } else if self.hover.is_some() || self.hover_ring.is_some() || self.hover_handle.is_some() {
                 self.hover = None;
                 self.hover_ring = None;
+                self.hover_handle = None;
                 self.needs_render = true;
             }
         }
@@ -280,8 +315,18 @@ impl PoserApp {
                 ui.ctx().request_repaint();
             }
         }
-        if released && self.drag.take().is_some() {
-            self.pending_undo_done = false;
+        if released {
+            if let Some(Drag::NavGizmo { start, moved: false, .. }) = self.drag {
+                // A click (not a drag) on an axis bubble snaps to that view.
+                let wc = self.axis_widget_center(view.rect);
+                if let Some(h) = gizmo::axis_points(wc, &self.cam).into_iter().filter(|h| (h.1 - start).length() < 11.0).last() {
+                    let now = self.last_time;
+                    self.set_view(h.4, now);
+                }
+            }
+            if self.drag.take().is_some() {
+                self.pending_undo_done = false;
+            }
         }
     }
 
@@ -359,14 +404,15 @@ impl PoserApp {
         // Navigation gizmo (click an axis bubble).
         let wc = self.axis_widget_center(view.rect);
         if (p - wc).length() < 50.0 {
-            let hits = gizmo::axis_points(wc, &self.cam);
-            if let Some((_, _, _, _, va)) = hits.into_iter().filter(|h| (h.1 - p).length() < 11.0).last() {
-                let now = self.last_time;
-                self.set_view(va, now);
-            }
+            // Drag the navigation gizmo to orbit freely; click a bubble to snap.
+            self.drag = Some(Drag::NavGizmo { start: p, last: p, moved: false });
             return;
         }
         self.pending_undo_done = false;
+        if let Some(handle) = self.hover_handle {
+            self.drag = Some(Drag::Handle { handle, mode: self.gizmo, last: p });
+            return;
+        }
         if self.tool == Tool::Pose {
             if let (Some(ring), Some(rs)) = (self.hover_ring, self.ring_set(view)) {
                 let axis_world = rs.axis(ring, view);
@@ -478,9 +524,96 @@ impl PoserApp {
     fn on_drag(&mut self, view: &ViewCtx, p: Pos2, shift: bool) {
         let Some(drag) = self.drag.clone() else { return };
         match drag {
+            Drag::NavGizmo { start, last, moved } => {
+                let d = p - last;
+                self.cam.orbit(d.x * 0.012, d.y * 0.012);
+                self.cam_anim = None;
+                self.drag = Some(Drag::NavGizmo { start, last: p, moved: moved || (p - start).length() > 3.0 });
+            }
+            Drag::Handle { handle, mode, last } => {
+                let Some(f) = self.sel.figure else { return };
+                let Some(hs) = self.handle_set(view) else { return };
+                let d = p - last;
+                self.drag = Some(Drag::Handle { handle, mode, last: p });
+                if d.length_sq() < 1e-6 {
+                    return;
+                }
+                match mode {
+                    GizmoMode::Move => {
+                        self.ensure_undo("Move");
+                        let delta = if handle == Handle::Center {
+                            view.drag_point(p, hs.center) - view.drag_point(last, hs.center)
+                        } else {
+                            hs.axis(handle) * hs.axis_delta(view, handle, d)
+                        };
+                        match self.sel.bone {
+                            Some(b) => {
+                                self.grab_bone(f, b, delta);
+                                self.scene.figures[f].touch();
+                                self.stop_anim(f);
+                            }
+                            None => {
+                                self.scene.figures[f].transform.translation += delta;
+                                self.needs_render = true;
+                            }
+                        }
+                    }
+                    GizmoMode::Scale => {
+                        self.ensure_undo("Scale");
+                        let k = if handle == Handle::Center {
+                            (1.0 - d.y * 0.006 + d.x * 0.006).clamp(0.8, 1.25)
+                        } else {
+                            (1.0 + hs.axis_delta(view, handle, d) / hs.len).clamp(0.8, 1.25)
+                        };
+                        match self.sel.bone {
+                            Some(b) => {
+                                let fig = &mut self.scene.figures[f];
+                                let sh = &mut fig.shapes[b];
+                                match handle {
+                                    Handle::Y => sh.length = (sh.length * k).clamp(0.1, 5.0),
+                                    Handle::X | Handle::Z => sh.girth = (sh.girth * k).clamp(0.1, 5.0),
+                                    Handle::Center => {
+                                        sh.length = (sh.length * k).clamp(0.1, 5.0);
+                                        sh.girth = (sh.girth * k).clamp(0.1, 5.0);
+                                    }
+                                }
+                                fig.touch();
+                            }
+                            None => {
+                                let t = &mut self.scene.figures[f].transform;
+                                t.scale = (t.scale * k).clamp(Vec3::splat(0.02), Vec3::splat(50.0));
+                                self.needs_render = true;
+                            }
+                        }
+                    }
+                    GizmoMode::Rotate => {}
+                }
+            }
             Drag::Ring { ring, axis_world, last_angle, tangent, last_pos } => {
-                let (Some(f), Some(b)) = (self.sel.figure, self.sel.bone) else { return };
+                let Some(f) = self.sel.figure else { return };
                 let Some(rs) = self.ring_set(view) else { return };
+                let Some(b) = self.sel.bone else {
+                    // Rotate the whole figure.
+                    let c = view.project(rs.center).unwrap_or(p);
+                    let to_cam = (view.cam.eye() - rs.center).normalize_or(Vec3::Z);
+                    let facing = axis_world.dot(to_cam);
+                    let a = screen_angle(c, p);
+                    let phi = if facing.abs() > 0.25 || ring == Ring::View {
+                        -wrap_angle(a - last_angle) * facing.signum()
+                    } else if let Some(t) = tangent {
+                        (p - last_pos).dot(t) / gizmo::RING_PX
+                    } else {
+                        0.0
+                    };
+                    if phi.abs() > 1e-6 {
+                        self.ensure_undo("Rotate figure");
+                        let t = &mut self.scene.figures[f].transform;
+                        t.rotation = (Quat::from_axis_angle(axis_world, phi) * t.rotation).normalize();
+                        self.needs_render = true;
+                    }
+                    self.drag = Some(Drag::Ring { ring, axis_world, last_angle: a, tangent, last_pos: p });
+                    return;
+                };
                 let rc = if ring == Ring::Swing { rs.swing.map(|s| s.0).unwrap_or(rs.center) } else { rs.center };
                 let c = view.project(rc).unwrap_or(p);
                 let to_cam = (view.cam.eye() - rc).normalize_or(Vec3::Z);
@@ -782,7 +915,16 @@ impl PoserApp {
                 }
             }
         }
-        if self.tool == Tool::Pose && self.opts.show_rings && self.modal.is_none() {
+        if self.tool == Tool::Pose && self.modal.is_none() && self.gizmo != GizmoMode::Rotate {
+            if let Some(hs) = self.handle_set(view) {
+                let active = match &self.drag {
+                    Some(Drag::Handle { handle, .. }) => Some(*handle),
+                    _ => None,
+                };
+                hs.draw(&painter, view, self.gizmo == GizmoMode::Scale, self.hover_handle, active);
+            }
+        }
+        if self.tool == Tool::Pose && self.opts.show_rings && self.modal.is_none() && self.gizmo == GizmoMode::Rotate {
             if let Some(rs) = self.ring_set(view) {
                 let active = match &self.drag {
                     Some(Drag::Ring { ring, .. }) => Some(*ring),

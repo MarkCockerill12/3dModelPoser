@@ -164,13 +164,14 @@ pub fn top_bar(app: &mut PoserApp, ui: &mut egui::Ui) {
                 ui.label(format!("3D Model Poser v{}", env!("CARGO_PKG_VERSION")));
             });
             ui.separator();
-            for (t, label, tip) in [
-                (Tool::Pose, "Pose", "Click a body part to select it, drag to pose with IK; rings rotate the selected joint"),
-                (Tool::Move, "Move", "Drag a figure across the floor (Shift: screen plane)"),
-                (Tool::Rotate, "Turn", "Drag left/right to turn a figure"),
+            for (g, label, tip) in [
+                (crate::app::GizmoMode::Move, "Move (W)", "Axis arrows: move the selected joint, or the figure if no joint is selected"),
+                (crate::app::GizmoMode::Rotate, "Rotate (E/R)", "Rotation rings"),
+                (crate::app::GizmoMode::Scale, "Scale (S)", "Scale handles: Y = length, X/Z = thickness"),
             ] {
-                if ui.selectable_label(app.tool == t, label).on_hover_text(tip).clicked() {
-                    app.tool = t;
+                if ui.selectable_label(app.gizmo == g && app.tool == Tool::Pose, label).on_hover_text(tip).clicked() {
+                    app.gizmo = g;
+                    app.tool = Tool::Pose;
                     app.needs_render = true;
                 }
             }
@@ -191,12 +192,17 @@ pub fn status_bar(app: &mut PoserApp, ui: &mut egui::Ui) {
 }
 
 pub fn toolbar(app: &mut PoserApp, ui: &mut egui::Ui) {
-    Panel::left("toolbar").exact_size(70.0).show(ui, |ui| {
+    Panel::left("toolbar").exact_size(80.0).show(ui, |ui| {
         ui.vertical_centered(|ui| {
             ui.add_space(6.0);
-            for (t, icon, tip) in [(Tool::Pose, "Pose", "Pose (rings + IK drag)"), (Tool::Move, "Move", "Move figure"), (Tool::Rotate, "Turn", "Turn figure")] {
-                if ui.selectable_label(app.tool == t, RichText::new(icon).size(13.0)).on_hover_text(tip).clicked() {
-                    app.tool = t;
+            for (g, icon, tip) in [
+                (crate::app::GizmoMode::Move, "Move", "Move gizmo (W)"),
+                (crate::app::GizmoMode::Rotate, "Rotate", "Rotate gizmo (E / R)"),
+                (crate::app::GizmoMode::Scale, "Scale", "Scale gizmo (S)"),
+            ] {
+                if ui.selectable_label(app.gizmo == g && app.tool == Tool::Pose, RichText::new(icon).size(13.0)).on_hover_text(tip).clicked() {
+                    app.gizmo = g;
+                    app.tool = Tool::Pose;
                     app.needs_render = true;
                 }
             }
@@ -370,7 +376,9 @@ pub fn windows(app: &mut PoserApp, ctx: &egui::Context) {
                     ("Click body part", "Select joint (rings appear)"),
                     ("Drag body part", "IK pose: hands/feet reach, elbows/knees swing, hips move"),
                     ("Drag a ring", "Rotate the joint around that axis (white = view)"),
-                    ("G / R / S", "Grab (IK) / rotate / scale bone, Blender style"),
+                    ("W / E or R / S", "Move / rotate / scale gizmo (Godot & Blender style)"),
+                    ("R again / S again / G", "Free rotate / scale / grab (Blender modal)"),
+                    ("Drag the axis widget", "Orbit to any angle (click a bubble to snap)"),
                     ("  then X Y Z", "Constrain to axis (press twice: local)"),
                     ("  then type", "Exact value, Enter/LMB confirm, Esc/RMB cancel"),
                     ("R R", "Trackball rotate"),

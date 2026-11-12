@@ -234,13 +234,41 @@ impl PoserApp {
                         }
                     }
                 }
-                Key::G | Key::R | Key::S if !ctrl && self.armature.is_none() && self.rig.is_none() => {
-                    if let (Some(f), Some(p)) = (self.sel.figure, pointer) {
-                        let kind = match k {
-                            Key::G => ModalKind::Grab,
-                            Key::R => ModalKind::Rotate,
-                            _ => ModalKind::Scale,
+                Key::W if !ctrl && !alt => {
+                    self.gizmo = crate::app::GizmoMode::Move;
+                    self.tool = crate::app::Tool::Pose;
+                    self.status = "Move gizmo (W): drag an arrow to move along that axis, the square to move freely".into();
+                    self.needs_render = true;
+                }
+                Key::E if !ctrl && !alt => {
+                    self.gizmo = crate::app::GizmoMode::Rotate;
+                    self.tool = crate::app::Tool::Pose;
+                    self.needs_render = true;
+                }
+                Key::R | Key::S if !ctrl && self.armature.is_none() && self.rig.is_none() && {
+                    let want = if k == Key::R { crate::app::GizmoMode::Rotate } else { crate::app::GizmoMode::Scale };
+                    // First press switches gizmo; pressing again starts the free (Blender) modal transform.
+                    let switch = self.gizmo != want;
+                    if switch {
+                        self.gizmo = want;
+                        self.tool = crate::app::Tool::Pose;
+                        self.needs_render = true;
+                        self.status = if want == crate::app::GizmoMode::Rotate {
+                            "Rotate gizmo (R/E): drag a ring. Press R again for free rotate (Blender style)".into()
+                        } else {
+                            "Scale gizmo (S): Y arrow = length, X/Z = thickness, centre = both. Press S again for free scale".into()
                         };
+                    }
+                    !switch
+                } => {
+                    if let (Some(f), Some(p)) = (self.sel.figure, pointer) {
+                        let kind = if k == Key::R { ModalKind::Rotate } else { ModalKind::Scale };
+                        self.begin_modal(kind, f, p, view);
+                    }
+                }
+                Key::G if !ctrl && self.armature.is_none() && self.rig.is_none() => {
+                    if let (Some(f), Some(p)) = (self.sel.figure, pointer) {
+                        let kind = ModalKind::Grab;
                         self.begin_modal(kind, f, p, view);
                     }
                 }

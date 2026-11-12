@@ -108,13 +108,18 @@ fn outliner(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
     if let Some(f) = app.sel.figure.filter(|f| *f < app.scene.figures.len()) {
         let fig = &app.scene.figures[f];
         if fig.model.has_skeleton() {
-            egui::CollapsingHeader::new(format!("Bones ({})", fig.model.skeleton.len())).id_salt("bones").show(ui, |ui| {
+            let shown = if !app.opts.all_bones && fig.model.humanoid.is_valid() { fig.model.humanoid.bones.len() } else { fig.model.skeleton.len() };
+            egui::CollapsingHeader::new(format!("Joints ({shown})")).id_salt("bones").show(ui, |ui| {
                 ui.add(egui::TextEdit::singleline(&mut app.bone_filter).hint_text("filter..."));
                 egui::ScrollArea::vertical().id_salt("bonelist").max_height(180.0).show(ui, |ui| {
                     let filt = app.bone_filter.to_lowercase();
                     let mut pick = None;
+                    let main_only = !app.opts.all_bones && fig.model.humanoid.is_valid();
                     for (i, b) in fig.model.skeleton.bones.iter().enumerate() {
                         if !filt.is_empty() && !b.name.to_lowercase().contains(&filt) {
+                            continue;
+                        }
+                        if main_only && fig.model.humanoid.human_of(i).is_none() {
                             continue;
                         }
                         let mut depth = 0;
@@ -355,6 +360,9 @@ fn pose_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
     ui.checkbox(&mut app.opts.local_axes, "Rings follow the bone (local axes)");
     ui.checkbox(&mut app.opts.show_rings, "Show rotation rings");
     ui.checkbox(&mut app.opts.spine_spread, "Spread spine rotation (smooth bend)");
+    if ui.checkbox(&mut app.opts.all_bones, "Select every bone (face, twist, toes)").on_hover_text("Off: clicking picks the main posing joint, like Design Doll").changed() {
+        app.needs_render = true;
+    }
     ui.checkbox(&mut app.opts.keep_feet_planted, "Keep feet planted when moving hips");
     if ui.checkbox(&mut app.scene.render.joint_stress, "Highlight stressed joints").changed() {
         *edited = true;
