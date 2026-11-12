@@ -12,3 +12,4 @@ anyhow.workspace = true
 log.workspace = true
 rayon = "1.11"
 bytemuck.workspace = true
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

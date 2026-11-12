@@ -5,6 +5,7 @@ use crate::presets;
 use poser_core::camera::{Camera, Projection, ViewAxis};
 use poser_core::glam::{Quat, Vec3};
 use poser_core::humanoid::{HumanBone, JointLimit};
+use poser_core::makehuman::{self, HumanParams};
 use poser_core::mannequin::{self, MannequinParams};
 use poser_core::model::Model;
 use poser_core::pose::{HumanPose, Pose, apply_human_pose, extract_human_pose};
@@ -160,6 +161,7 @@ pub struct PoserApp {
     pub show_timeline: bool,
     pub pins: HashMap<(u64, usize), Pin>,
     pub mannequins: HashMap<u64, MannequinParams>,
+    pub humans: HashMap<u64, HumanParams>,
     pub export: ExportSettings,
     pub help_open: bool,
     pub frame_ms: f32,
@@ -221,6 +223,7 @@ impl PoserApp {
             show_timeline: true,
             pins: HashMap::new(),
             mannequins: HashMap::new(),
+            humans: HashMap::new(),
             export: ExportSettings { width: 1920, height: 1080, transparent: true, open: false },
             help_open: false,
             frame_ms: 0.0,
@@ -233,7 +236,7 @@ impl PoserApp {
             sheet_model: None,
             rig_markers: HashMap::new(),
         };
-        let idx = app.add_mannequin(MannequinParams::default(), "Mannequin");
+        let idx = app.add_human(HumanParams::default(), "Human");
         app.sel = Selection { figure: Some(idx), bone: None };
         app.frame_all(false);
         let args: Vec<String> = std::env::args().skip(1).collect();
@@ -302,6 +305,52 @@ impl PoserApp {
             self.apply_pose_to(idx, &p, true);
         }
         idx
+    }
+
+    fn apply_human_shapes(&mut self, idx: usize, p: &HumanParams) {
+        let fig = &mut self.scene.figures[idx];
+        let map = fig.model.humanoid.clone();
+        fig.shapes = vec![Default::default(); fig.model.skeleton.len()];
+        for (h, l, g) in p.shapes() {
+            if let Some(b) = map.get(h) {
+                fig.shapes[b].length = l;
+                fig.shapes[b].girth = g;
+            }
+        }
+        fig.touch();
+    }
+
+    /// Add the realistic MakeHuman-based body.
+    pub fn add_human(&mut self, params: HumanParams, name: &str) -> usize {
+        let model = Arc::new(makehuman::build(&params));
+        let idx = self.scene.add_model(model);
+        let n = self.scene.figures.len();
+        if n > 1 {
+            let x = self.scene.figures.iter().take(n - 1).map(|f| f.transform.translation.x).fold(f32::MIN, f32::max);
+            self.scene.figures[idx].transform.translation.x = x + 0.8;
+        }
+        self.scene.figures[idx].name = name.to_string();
+        let id = self.scene.figures[idx].id;
+        self.apply_human_shapes(idx, &params);
+        self.humans.insert(id, params);
+        if let Some(p) = self.body_presets.iter().find(|p| p.name == "Relaxed stand").cloned() {
+            self.apply_pose_to(idx, &p, true);
+        }
+        idx
+    }
+
+    pub fn rebuild_human(&mut self, idx: usize, params: HumanParams) {
+        let fig = &self.scene.figures[idx];
+        let pose = extract_human_pose(&fig.model.skeleton, &fig.model.humanoid, &fig.pose.locals);
+        let id = fig.id;
+        let model = Arc::new(makehuman::build(&params));
+        let fig = &mut self.scene.figures[idx];
+        fig.pose = Pose::tpose(&model.skeleton, &model.humanoid);
+        fig.model = model;
+        self.apply_human_shapes(idx, &params);
+        self.humans.insert(id, params);
+        self.apply_pose_to(idx, &pose, true);
+        self.refresh_pins(idx);
     }
 
     /// Rebuild a procedural mannequin with new proportions, keeping its pose.
@@ -427,6 +476,9 @@ impl PoserApp {
             fig.touch();
             if let Some(p) = self.mannequins.get(&self.scene.figures[f].id).cloned() {
                 self.mannequins.insert(fig.id, p);
+            }
+            if let Some(p) = self.humans.get(&self.scene.figures[f].id).cloned() {
+                self.humans.insert(fig.id, p);
             }
             self.scene.figures.push(fig);
             self.sel = Selection { figure: Some(self.scene.figures.len() - 1), bone: None };
@@ -828,7 +880,7 @@ impl PoserApp {
                 self.scene.render.shading = poser_core::scene::Shading::Textured;
                 idx
             }
-            None => self.add_mannequin(MannequinParams::default(), "Sheet"),
+            None => self.add_human(HumanParams::default(), "Sheet"),
         };
         let has_fingers = self.scene.figures[idx].model.humanoid.get(poser_core::humanoid::HumanBone::LeftIndexProximal).is_some();
         self.scene.render.show_joints = false;

@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 #[derive(Serialize, Deserialize)]
 pub enum FigureSource {
+    Human(poser_core::makehuman::HumanParams),
     Mannequin(MannequinParams),
     File { path: PathBuf, rig: Option<poser_rig::Markers> },
 }
@@ -63,7 +64,9 @@ impl PoserApp {
     pub fn save_scene(&self, path: &Path) -> Result<()> {
         let mut figures = vec![];
         for f in &self.scene.figures {
-            let source = if let Some(p) = self.mannequins.get(&f.id) {
+            let source = if let Some(p) = self.humans.get(&f.id) {
+                FigureSource::Human(p.clone())
+            } else if let Some(p) = self.mannequins.get(&f.id) {
                 FigureSource::Mannequin(p.clone())
             } else if let Some(src) = f.model.path.clone() {
                 FigureSource::File { path: src, rig: self.rig_markers.get(&f.id).copied() }
@@ -104,12 +107,18 @@ impl PoserApp {
         self.scene.figures.clear();
         self.pins.clear();
         self.mannequins.clear();
+        self.humans.clear();
         self.rig_markers.clear();
         self.retargets.clear();
         let base = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let mut missing = vec![];
         for ff in file.figures {
+            let mut human = None;
             let (model, params, markers) = match &ff.source {
+                FigureSource::Human(h) => {
+                    human = Some(h.clone());
+                    (Arc::new(poser_core::makehuman::build(h)), None, None)
+                }
                 FigureSource::Mannequin(p) => (Arc::new(mannequin::build(p)), Some(p.clone()), None),
                 FigureSource::File { path: p, rig } => {
                     let p = if p.is_file() { p.clone() } else { base.join(p.file_name().unwrap_or_default()) };
@@ -151,6 +160,9 @@ impl PoserApp {
             if let Some(p) = params {
                 self.mannequins.insert(id, p);
             }
+            if let Some(h) = human {
+                self.humans.insert(id, h);
+            }
             if let Some(m) = markers {
                 self.rig_markers.insert(id, m);
             }
@@ -177,7 +189,7 @@ impl PoserApp {
         self.scene.figures.clear();
         self.pins.clear();
         self.retargets.clear();
-        let i = self.add_mannequin(MannequinParams::default(), "Mannequin");
+        let i = self.add_human(poser_core::makehuman::HumanParams::default(), "Human");
         self.sel = Selection { figure: Some(i), bone: None };
         self.cam = Camera::default();
         self.frame_all(false);
