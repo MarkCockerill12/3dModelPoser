@@ -8,6 +8,7 @@ mod panels;
 mod presets;
 mod scenefile;
 mod theme;
+mod thumbs;
 mod viewport;
 
 fn main() -> eframe::Result {

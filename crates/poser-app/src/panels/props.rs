@@ -416,9 +416,18 @@ fn hands_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
     ui.separator();
     ui.label(RichText::new("Hand presets").strong());
     let presets = app.hand_presets.clone();
+    let ctx = ui.ctx().clone();
+    app.ensure_thumbnails(&ctx);
     egui::Grid::new("handpresets").num_columns(4).show(ui, |ui| {
         for (i, p) in presets.iter().enumerate() {
-            ui.label(&p.name);
+            match app.thumbs.map.get(&format!("hand:{}", p.name)) {
+                Some(t) => {
+                    ui.add(egui::Image::new((t.id(), egui::vec2(48.0, 60.0)))).on_hover_text(&p.name);
+                }
+                None => {
+                    ui.label(&p.name);
+                }
+            }
             for (lbl, sides) in [("L", vec![Side::Left]), ("R", vec![Side::Right]), ("Both", vec![Side::Left, Side::Right])] {
                 if ui.small_button(lbl).clicked() {
                     app.push_undo("Hand preset");
@@ -640,19 +649,40 @@ fn library_tab(app: &mut PoserApp, ui: &mut egui::Ui) {
         return;
     };
     let presets = app.body_presets.clone();
-    let mut cats: Vec<String> = presets.iter().map(|p| p.category.clone()).collect();
-    cats.dedup();
+    let mut cats: Vec<String> = vec![];
+    for p in &presets {
+        if !cats.contains(&p.category) {
+            cats.push(p.category.clone());
+        }
+    }
     let mut apply: Option<(poser_core::pose::HumanPose, bool)> = None;
+    let ctx = ui.ctx().clone();
+    app.ensure_thumbnails(&ctx);
+    let tw = crate::thumbs::THUMB.0 as f32 * 0.62;
+    let th = crate::thumbs::THUMB.1 as f32 * 0.62;
+    let cols = ((ui.available_width() / (tw + 8.0)).floor() as usize).max(1);
     for c in cats {
-        egui::CollapsingHeader::new(&c).default_open(true).show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for p in presets.iter().filter(|p| p.category == c) {
-                    let r = ui.button(&p.name);
+        egui::CollapsingHeader::new(&c).id_salt(("libcat", c.clone())).default_open(true).show(ui, |ui| {
+            egui::Grid::new(("lib", c.clone())).num_columns(cols).spacing([6.0, 6.0]).show(ui, |ui| {
+                for (i, p) in presets.iter().filter(|p| p.category == c).enumerate() {
+                    let r = ui.vertical(|ui| {
+                        ui.set_width(tw);
+                        let r = match app.thumbs.map.get(&format!("pose:{}", p.name)) {
+                            Some(t) => ui.add(egui::Button::image(egui::Image::new((t.id(), egui::vec2(tw, th))))),
+                            None => ui.add_sized([tw, th], egui::Button::new("...")),
+                        };
+                        ui.add(egui::Label::new(RichText::new(&p.name).size(11.0)).truncate());
+                        r
+                    }).inner;
+                    let r = r.on_hover_text(format!("{}  (right-click: mirrored)", p.name));
                     if r.clicked() {
                         apply = Some((p.clone(), false));
                     }
                     if r.secondary_clicked() {
                         apply = Some((p.clone(), true));
+                    }
+                    if i % cols == cols - 1 {
+                        ui.end_row();
                     }
                 }
             });

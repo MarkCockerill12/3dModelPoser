@@ -215,6 +215,7 @@ pub struct PoserApp {
     pub drag_translate: bool,
     pub ctrl_down: bool,
     pub ref_image: Option<RefImage>,
+    pub thumbs: crate::thumbs::Thumbs,
 }
 
 impl PoserApp {
@@ -284,11 +285,18 @@ impl PoserApp {
             drag_translate: false,
             ctrl_down: false,
             ref_image: None,
+            thumbs: Default::default(),
         };
         let idx = app.add_human(HumanParams::default(), "Human");
         app.sel = Selection { figure: Some(idx), bone: None };
         app.frame_all(false);
         let args: Vec<String> = std::env::args().skip(1).collect();
+        match std::env::var("POSER_TAB").as_deref() {
+            Ok("library") => app.props_tab = PropsTab::Library,
+            Ok("body") => app.props_tab = PropsTab::Body,
+            Ok("hands") => app.props_tab = PropsTab::Hands,
+            _ => {}
+        }
         if std::env::var_os("POSER_LBS").is_some() {
             poser_core::skinning::DUAL_QUATERNION.store(false, std::sync::atomic::Ordering::Relaxed);
             app.opts.dual_quaternion = false;
