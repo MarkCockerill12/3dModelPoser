@@ -375,6 +375,9 @@ impl PoserApp {
                         let (floor, top, center) = model.rest_extent();
                         let h = (top - floor).max(1e-4);
                         let scale = if h > 3.2 || h < 0.35 { 1.75 / h } else { 1.0 };
+                        if !model.textures.is_empty() && self.scene.render.shading == poser_core::scene::Shading::Solid {
+                            self.scene.render.shading = poser_core::scene::Shading::Textured;
+                        }
                         let idx = self.scene.add_model(Arc::new(model));
                         let n = self.scene.figures.len();
                         let x = if n > 1 {

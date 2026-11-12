@@ -15,6 +15,8 @@ pub struct Bone {
     pub axis: Vec3,
     /// Rest length in bone-local units.
     pub length: f32,
+    /// MMD-style "append" transform: copy (a fraction of) another bone's posed rotation.
+    pub inherit: Option<(usize, f32)>,
 }
 
 impl Bone {
@@ -27,6 +29,7 @@ impl Bone {
             inverse_bind: Mat4::IDENTITY,
             axis: Vec3::Y,
             length: 0.1,
+            inherit: None,
         }
     }
 }
@@ -139,7 +142,14 @@ impl Skeleton {
         let mut world = Vec::with_capacity(n);
         let mut skin = Vec::with_capacity(n);
         for (i, bone) in self.bones.iter().enumerate() {
-            let local = locals.get(i).copied().unwrap_or(bone.rest);
+            let mut local = locals.get(i).copied().unwrap_or(bone.rest);
+            if let Some((src, w)) = bone.inherit {
+                if let (Some(sl), Some(sb)) = (locals.get(src), self.bones.get(src)) {
+                    let delta = sl.rotation * sb.rest.rotation.inverse();
+                    let d = Quat::IDENTITY.slerp(delta, w);
+                    local.rotation = (d * local.rotation).normalize();
+                }
+            }
             let (parent_world, parent_shape) = match bone.parent {
                 Some(p) => (
                     world[p],
