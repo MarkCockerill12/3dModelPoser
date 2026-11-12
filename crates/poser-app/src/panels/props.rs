@@ -866,6 +866,7 @@ fn render_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
     ui.checkbox(&mut s.eye_level_line, "Eye-level (horizon) line");
     ui.checkbox(&mut s.perspective_guides, "Vanishing point guides");
     ui.checkbox(&mut s.thirds_grid, "Rule-of-thirds grid");
+    ui.add(Slider::new(&mut app.opts.render_scale, 0.4..=1.0).text("Viewport resolution")).on_hover_text("Lower = faster and less memory on integrated graphics");
     ui.horizontal(|ui| {
         ui.label("Anti-aliasing");
         ui.selectable_value(&mut s.msaa, 1, "Off");

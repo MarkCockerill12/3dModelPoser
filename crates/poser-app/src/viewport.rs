@@ -83,7 +83,7 @@ impl PoserApp {
     }
 
     fn render_viewport(&mut self, ui: &egui::Ui, frame: &mut eframe::Frame, rect: Rect, changed: bool) {
-        let ppp = ui.ctx().pixels_per_point();
+        let ppp = ui.ctx().pixels_per_point() * self.opts.render_scale;
         let w = ((rect.width() * ppp).round() as u32).max(1);
         let h = ((rect.height() * ppp).round() as u32).max(1);
         let stale = match &self.last_rendered {

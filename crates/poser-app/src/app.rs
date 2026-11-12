@@ -114,6 +114,8 @@ pub struct Options {
     pub scroll: ScrollMode,
     pub drag_empty_orbits: bool,
     pub dual_quaternion: bool,
+    /// Viewport resolution multiplier (lower = faster, less memory).
+    pub render_scale: f32,
     pub local_axes: bool,
     pub limits: bool,
     pub emulate_3button: bool,
@@ -237,6 +239,7 @@ impl PoserApp {
                 scroll: ScrollMode::Auto,
                 drag_empty_orbits: true,
                 dual_quaternion: true,
+                render_scale: 1.0,
                 local_axes: true,
                 limits: true,
                 emulate_3button: true,
