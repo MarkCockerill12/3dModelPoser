@@ -323,6 +323,9 @@ fn pose_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
         ui.label(RichText::new("Click a body part to select a joint.").weak());
     }
     ui.label(RichText::new("Whole pose").strong());
+    if humanoid && ui.button("Pose from photo...").on_hover_text("Estimate the pose of the person in a photo (runs offline on your computer)").clicked() {
+        app.photo_dialog();
+    }
     ui.horizontal_wrapped(|ui| {
         if ui.button("Rest").clicked() {
             app.reset_pose(f, false);

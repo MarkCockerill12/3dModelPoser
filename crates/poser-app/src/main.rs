@@ -6,6 +6,7 @@ mod deform;
 mod gizmo;
 mod input;
 mod panels;
+mod photo;
 mod presets;
 mod scenefile;
 mod theme;

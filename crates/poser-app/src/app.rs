@@ -220,6 +220,9 @@ pub struct PoserApp {
     pub inset: Option<Camera>,
     pub inset_tex: Option<egui::TextureId>,
     pub armature: Option<crate::armature::ArmatureEdit>,
+    pub photo_job: Option<crate::photo::PhotoJob>,
+    /// Debug: export the viewport image after N frames, then quit.
+    pub export_after: Option<(PathBuf, u32)>,
 }
 
 impl PoserApp {
@@ -293,6 +296,8 @@ impl PoserApp {
             inset: None,
             inset_tex: None,
             armature: None,
+            photo_job: None,
+            export_after: None,
         };
         let idx = app.add_human(HumanParams::default(), "Human");
         app.sel = Selection { figure: Some(idx), bone: None };
@@ -313,6 +318,20 @@ impl PoserApp {
         if std::env::var_os("POSER_LBS").is_some() {
             poser_core::skinning::DUAL_QUATERNION.store(false, std::sync::atomic::Ordering::Relaxed);
             app.opts.dual_quaternion = false;
+        }
+        if let Some(i) = args.iter().position(|a| a == "--photo-test") {
+            let input = PathBuf::from(&args[i + 1]);
+            let out = PathBuf::from(&args[i + 2]);
+            let (tx, rx) = channel();
+            let img = image::open(&input).expect("photo").to_rgb8();
+            let (w, h) = img.dimensions();
+            let _ = tx.send(poser_ai::estimate(&img).map(|k| (k, w, h)));
+            app.photo_job = Some(crate::photo::PhotoJob { figure_id: app.scene.figures[0].id, path: input, rx });
+            app.export_after = Some((out, 8));
+            app.export.transparent = false;
+            app.export.width = 1600;
+            app.export.height = 1000;
+            return app;
         }
         if let Some(i) = args.iter().position(|a| a == "--preset-sheet") {
             app.sheet_model = args.get(i + 2).map(PathBuf::from);
@@ -1226,6 +1245,7 @@ impl eframe::App for PoserApp {
         self.poll_retargets(&ctx);
         self.poll_rig();
         self.poll_armature();
+        self.poll_photo(&ctx);
         if self.armature.as_ref().is_some_and(|a| a.computing.is_some()) {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
@@ -1249,6 +1269,21 @@ impl eframe::App for PoserApp {
             crate::panels::right_panel(self, ui);
         }
         crate::panels::windows(self, &ctx);
+        if let Some((path, n)) = self.export_after.take() {
+            if n == 0 {
+                // Side-by-side: front with photo, plus a 3/4 view to judge depth.
+                self.inset = Some({
+                    let mut c = self.cam;
+                    c.set_yaw_pitch(60f32.to_radians(), -10f32.to_radians());
+                    c
+                });
+                self.export_image(path);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                self.export_after = Some((path, n - 1));
+                ctx.request_repaint();
+            }
+        }
         if let Some((path, n)) = self.selftest.take() {
             if n == 0 {
                 self.render_preset_sheet(&path);

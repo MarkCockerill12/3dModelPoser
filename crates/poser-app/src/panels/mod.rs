@@ -26,6 +26,10 @@ pub fn top_bar(app: &mut PoserApp, ui: &mut egui::Ui) {
                     ui.close();
                 }
                 ui.separator();
+                if ui.button("Pose from photo...").clicked() {
+                    app.photo_dialog();
+                    ui.close();
+                }
                 if ui.button("Import model...  (Ctrl+I)").clicked() {
                     app.import_dialog();
                     ui.close();

@@ -14,6 +14,7 @@ poser-core.workspace = true
 poser-io.workspace = true
 poser-rig.workspace = true
 poser-render.workspace = true
+poser-ai.workspace = true
 glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true

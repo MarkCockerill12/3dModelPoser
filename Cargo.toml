@@ -14,6 +14,7 @@ poser-core = { path = "crates/poser-core" }
 poser-io = { path = "crates/poser-io" }
 poser-rig = { path = "crates/poser-rig" }
 poser-render = { path = "crates/poser-render" }
+poser-ai = { path = "crates/poser-ai" }
 glam = { version = "0.34", features = ["serde", "bytemuck"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
