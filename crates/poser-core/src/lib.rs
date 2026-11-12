@@ -3,6 +3,7 @@ pub mod animation;
 pub mod camera;
 pub mod humanoid;
 pub mod ik;
+pub mod mannequin;
 pub mod model;
 pub mod picking;
 pub mod pose;

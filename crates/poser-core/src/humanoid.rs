@@ -36,14 +36,14 @@ human_bones! {
     RightLittleProximal = "rightLittleProximal", RightLittleIntermediate = "rightLittleIntermediate", RightLittleDistal = "rightLittleDistal",
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Side {
     Center,
     Left,
     Right,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Finger {
     Thumb,
     Index,
@@ -400,6 +400,17 @@ fn split_side(raw: &str) -> (Side, String) {
         .filter(|t| !t.is_empty())
         .map(|t| t.to_string())
         .collect();
+    let mut tokens = tokens;
+    // Exporters (e.g. Sketchfab) append node indices: "pelvis_07", "spine_0_08".
+    while tokens.len() > 1 && tokens.last().is_some_and(|t| t.chars().all(|c| c.is_ascii_digit())) {
+        tokens.pop();
+    }
+    let helper = tokens.iter().any(|t| {
+        matches!(t.as_str(), "ik" | "fk" | "target" | "pole" | "ctrl" | "control" | "helper" | "twist" | "roll" | "end" | "nub" | "socket" | "attach" | "attachment" | "weapon" | "prop" | "motion" | "dummy" | "null" | "offset" | "jiggle" | "physics" | "spring" | "mch" | "tgt" | "ref" | "aim" | "lookat" | "follow")
+    });
+    if helper {
+        return (Side::Center, "__helper__".into());
+    }
     let mut side = Side::Center;
     let mut kept = vec![];
     for (i, t) in tokens.iter().enumerate() {
@@ -466,6 +477,9 @@ enum Kind {
 
 fn classify(core: &str) -> Option<Kind> {
     let has = |p: &str| core.contains(p);
+    if core == "__helper__" {
+        return Some(Kind::Twist);
+    }
     if has("twist") || has("roll") || has("捩") || has("share") || has("helper") || has("ik") && core.len() <= 6 {
         return Some(Kind::Twist);
     }
@@ -537,19 +551,19 @@ fn classify(core: &str) -> Option<Kind> {
     if has("clavicle") || has("collar") || has("shoulder") && !has("upper") {
         return Some(Kind::Shoulder);
     }
-    if has("forearm") || has("lowerarm") || has("elbow") || has("lowarm") || has("loarm") {
+    if has("forearm") || has("lowerarm") || has("armlower") || has("elbow") || has("lowarm") || has("loarm") {
         return Some(Kind::LowerArm);
     }
-    if has("upperarm") || has("uparm") || core == "arm" || core == "humerus" || core == "upper_arm" {
+    if has("upperarm") || has("armupper") || has("uparm") || core == "arm" || core == "humerus" || core == "upper_arm" {
         return Some(Kind::UpperArm);
     }
     if has("hand") || has("wrist") || has("palm") && false {
         return Some(Kind::Hand);
     }
-    if has("upleg") || has("thigh") || has("upperleg") || has("femur") {
+    if has("upleg") || has("thigh") || has("upperleg") || has("legupper") || has("femur") {
         return Some(Kind::UpperLeg);
     }
-    if has("calf") || has("shin") || has("lowerleg") || has("knee") || has("lowleg") || core == "leg" {
+    if has("calf") || has("shin") || has("lowerleg") || has("leglower") || has("knee") || has("lowleg") || core == "leg" {
         return Some(Kind::LowerLeg);
     }
     if has("toe") || has("ball") {
@@ -575,6 +589,11 @@ fn depth(skel: &Skeleton, mut b: usize) -> usize {
 
 /// Detect the humanoid mapping from names and hierarchy. Returns an empty map on failure.
 pub fn detect_humanoid(skel: &Skeleton) -> HumanoidMap {
+    detect_humanoid_weighted(skel, None)
+}
+
+/// Like [`detect_humanoid`], preferring bones that actually deform the mesh.
+pub fn detect_humanoid_weighted(skel: &Skeleton, deforming: Option<&[bool]>) -> HumanoidMap {
     let n = skel.len();
     let mut map = HumanoidMap::default();
     if n == 0 {
@@ -590,10 +609,11 @@ pub fn detect_humanoid(skel: &Skeleton) -> HumanoidMap {
         .collect();
 
     // Pick the shallowest bone of each (kind, side).
+    let non_deforming = |i: usize| deforming.is_some_and(|d| !d.get(i).copied().unwrap_or(true));
     let pick = |kind: Kind, side: Side| -> Option<usize> {
         (0..n)
             .filter(|i| info[*i].1 == Some(kind) && info[*i].0 == side)
-            .min_by_key(|i| depth(skel, *i))
+            .min_by_key(|i| (non_deforming(*i), depth(skel, *i)))
     };
 
     fn set(map: &mut HumanoidMap, h: HumanBone, b: Option<usize>) {
@@ -806,6 +826,10 @@ mod tests {
         assert_eq!(classify("forearm"), Some(Kind::LowerArm));
         assert_eq!(classify("handindex1"), Some(Kind::Finger(Finger::Index)));
         assert_eq!(classify("upleg"), Some(Kind::UpperLeg));
+        assert_eq!(split_side("pelvis_07"), (Side::Center, "pelvis".into()));
+        assert_eq!(split_side("leg_upper_L_0182"), (Side::Left, "legupper".into()));
+        assert_eq!(classify(&split_side("foot_L_IK_target_0200").1), Some(Kind::Twist));
+        assert_eq!(classify("legupper"), Some(Kind::UpperLeg));
     }
 
     #[test]

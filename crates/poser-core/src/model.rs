@@ -215,40 +215,68 @@ impl Model {
         names
     }
 
+    /// Rest-pose vertex positions (model space) for every mesh.
+    pub fn rest_positions(&self) -> Vec<Vec<Vec3>> {
+        let pm = self.skeleton.evaluate(&self.skeleton.rest_locals(), None);
+        self.meshes
+            .iter()
+            .map(|m| {
+                let rigid = match m.rigid_bone {
+                    Some(b) if b < pm.world.len() => pm.world[b] * m.rigid_transform,
+                    _ => m.rigid_transform,
+                };
+                let mut out = crate::skinning::DeformedMesh::default();
+                crate::skinning::deform(m, &[], &pm.skin, rigid, &mut out);
+                out.positions
+            })
+            .collect()
+    }
+
     /// Axis-aligned bounds of the rest-pose geometry in model space.
     pub fn rest_bounds(&self) -> (Vec3, Vec3) {
         let mut lo = Vec3::splat(f32::MAX);
         let mut hi = Vec3::splat(f32::MIN);
-        let rest = self.skeleton.rest_world();
-        for m in &self.meshes {
-            let rigid = if m.is_skinned() {
-                None
-            } else {
-                Some(match m.rigid_bone {
-                    Some(b) if b < rest.len() => rest[b] * m.rigid_transform,
-                    _ => m.rigid_transform,
-                })
-            };
-            for (i, p) in m.positions.iter().enumerate() {
-                let w = if let Some(t) = rigid {
-                    t.transform_point3(*p)
-                } else {
-                    // Skinned verts: bind pose == rest pose for well-formed assets.
-                    let j = m.joints[i][0] as usize;
-                    if j < rest.len() {
-                        (rest[j] * self.skeleton.bones[j].inverse_bind).transform_point3(*p)
-                    } else {
-                        *p
-                    }
-                };
-                lo = lo.min(w);
-                hi = hi.max(w);
+        for ps in self.rest_positions() {
+            for p in ps {
+                lo = lo.min(p);
+                hi = hi.max(p);
             }
         }
-        if lo.x > hi.x {
-            (Vec3::ZERO, Vec3::ZERO)
-        } else {
-            (lo, hi)
+        if lo.x > hi.x { (Vec3::ZERO, Vec3::ZERO) } else { (lo, hi) }
+    }
+
+    /// (floor height, top, horizontal centre) at rest. For humanoids the floor is taken from
+    /// vertices driven by the feet, so stray geometry below the soles is ignored.
+    pub fn rest_extent(&self) -> (f32, f32, Vec3) {
+        let pos = self.rest_positions();
+        let (lo, hi) = self.rest_bounds();
+        let feet: Vec<usize> = [
+            crate::humanoid::HumanBone::LeftFoot,
+            crate::humanoid::HumanBone::RightFoot,
+            crate::humanoid::HumanBone::LeftToes,
+            crate::humanoid::HumanBone::RightToes,
+        ]
+        .iter()
+        .filter_map(|h| self.humanoid.get(*h))
+        .collect();
+        let mut floor = f32::MAX;
+        if !feet.is_empty() {
+            for (m, ps) in self.meshes.iter().zip(&pos) {
+                if !m.is_skinned() {
+                    continue;
+                }
+                for (i, p) in ps.iter().enumerate() {
+                    let (j, w) = (m.joints[i], m.weights[i]);
+                    let k = (0..4).max_by(|a, b| w[*a].total_cmp(&w[*b])).unwrap();
+                    if feet.contains(&(j[k] as usize)) && w[k] > 0.5 {
+                        floor = floor.min(p.y);
+                    }
+                }
+            }
         }
+        if floor == f32::MAX {
+            floor = lo.y;
+        }
+        (floor, hi.y, (lo + hi) * 0.5)
     }
 }

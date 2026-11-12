@@ -343,6 +343,11 @@ impl UndoStack {
         Some(label)
     }
 
+    /// Drop the most recent snapshot (cancelled operation).
+    pub fn discard_last(&mut self) {
+        self.past.pop();
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.past.is_empty()
     }
