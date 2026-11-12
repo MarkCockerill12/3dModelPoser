@@ -29,6 +29,8 @@ pub struct Material {
     pub alpha_mode: AlphaMode,
     pub alpha_cutoff: f32,
     pub double_sided: bool,
+    /// Brightness multiplier in clay/toon shading (hair darker, clothes slightly darker).
+    pub clay_shade: f32,
 }
 
 impl Default for Material {
@@ -40,6 +42,7 @@ impl Default for Material {
             alpha_mode: AlphaMode::Opaque,
             alpha_cutoff: 0.5,
             double_sided: false,
+            clay_shade: 1.0,
         }
     }
 }

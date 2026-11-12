@@ -207,6 +207,7 @@ pub fn load(path: &Path) -> Result<Model> {
             },
             alpha_cutoff: m.alpha_cutoff().unwrap_or(0.5),
             double_sided: m.double_sided(),
+            clay_shade: 1.0,
         });
     }
     let default_material = model.materials.len();

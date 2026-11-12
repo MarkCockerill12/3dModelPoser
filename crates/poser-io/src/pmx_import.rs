@@ -236,6 +236,7 @@ pub fn load(path: &Path) -> Result<Model> {
             alpha_mode: if diffuse.w < 0.99 { AlphaMode::Blend } else { AlphaMode::Mask },
             alpha_cutoff: 0.3,
             double_sided: flags & 1 != 0,
+            clay_shade: 1.0,
         });
         runs.push(count);
     }

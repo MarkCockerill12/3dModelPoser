@@ -489,6 +489,30 @@ fn body_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
                 ch |= ui.add(Slider::new(v, r).text(label)).changed();
             }
         });
+        egui::CollapsingHeader::new("Clothes and hair").id_salt("outfit").show(ui, |ui| {
+            let pick = |ui: &mut egui::Ui, label: &str, cat: &str, cur: &mut Option<String>| -> bool {
+                let mut changed = false;
+                egui::ComboBox::from_label(label).selected_text(cur.clone().unwrap_or_else(|| "None".into())).show_ui(ui, |ui| {
+                    changed |= ui.selectable_value(cur, None, "None").changed();
+                    for n in poser_core::makehuman::proxy_names(cat) {
+                        changed |= ui.selectable_value(cur, Some(n.to_string()), n).changed();
+                    }
+                });
+                changed
+            };
+            ch |= pick(ui, "Hair", "hair", &mut p.hair);
+            ch |= pick(ui, "Eyebrows", "eyebrows", &mut p.eyebrows);
+            for n in poser_core::makehuman::proxy_names("clothes") {
+                let mut on = p.clothes.iter().any(|c| c == n);
+                if ui.checkbox(&mut on, n.replace('_', " ")).changed() {
+                    p.clothes.retain(|c| c != n);
+                    if on {
+                        p.clothes.push(n.to_string());
+                    }
+                    ch = true;
+                }
+            }
+        });
         if ch {
             app.rebuild_human(f, p);
             *edited = true;

@@ -11,5 +11,6 @@ serde_json.workspace = true
 anyhow.workspace = true
 log.workspace = true
 rayon = "1.11"
+image.workspace = true
 bytemuck.workspace = true
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

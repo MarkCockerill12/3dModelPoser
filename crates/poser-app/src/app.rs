@@ -915,7 +915,15 @@ impl PoserApp {
                 self.scene.render.shading = poser_core::scene::Shading::Textured;
                 idx
             }
-            None => self.add_human(HumanParams::default(), "Sheet"),
+            None => {
+                let mut hp = HumanParams::default();
+                if let Ok(o) = std::env::var("POSER_OUTFIT") {
+                    let mut parts = o.split(';');
+                    hp.clothes = parts.next().unwrap_or("").split(',').filter(|x| !x.is_empty()).map(String::from).collect();
+                    hp.hair = parts.next().filter(|x| !x.is_empty()).map(String::from);
+                }
+                self.add_human(hp, "Sheet")
+            }
         };
         let has_fingers = self.scene.figures[idx].model.humanoid.get(poser_core::humanoid::HumanBone::LeftIndexProximal).is_some();
         self.scene.render.show_joints = false;

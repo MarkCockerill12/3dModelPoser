@@ -196,6 +196,7 @@ pub fn load(path: &Path) -> Result<Model> {
             alpha_mode: if opacity < 0.99 { AlphaMode::Blend } else { AlphaMode::Opaque },
             alpha_cutoff: 0.5,
             double_sided: true,
+            clay_shade: 1.0,
         });
     }
     let default_material = model.materials.len();

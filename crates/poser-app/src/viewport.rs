@@ -32,7 +32,7 @@ pub fn build_draws<'a>(scene: &'a Scene, cache: &'a DeformCache, export: bool) -
             let (color, use_texture) = match s.shading {
                 Shading::Textured => (mat.base_color, true),
                 Shading::Silhouette => (to_linear(s.outline_color), false),
-                _ => (to_linear(tint), false),
+                _ => (to_linear(tint) * poser_core::glam::Vec4::new(mat.clay_shade, mat.clay_shade, mat.clay_shade, 1.0), false),
             };
             out.push(MeshDraw {
                 key: (f.id, mi),

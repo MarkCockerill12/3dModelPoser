@@ -762,7 +762,9 @@ impl Renderer {
         }
         let m = &self.meshes[&d.key];
         let nm = d.world.inverse().transpose();
-        let has_tex = d.use_texture && d.material.base_color_texture.is_some_and(|t| t < d.textures.len());
+        let tex_ok = d.material.base_color_texture.is_some_and(|t| t < d.textures.len());
+        let has_tex = d.use_texture && tex_ok;
+        let alpha_tex = !has_tex && tex_ok && d.material.alpha_mode == AlphaMode::Mask;
         let cutoff = match d.material.alpha_mode {
             AlphaMode::Mask => d.material.alpha_cutoff,
             AlphaMode::Blend => 0.02,
@@ -772,7 +774,7 @@ impl Renderer {
             model: d.world.to_cols_array_2d(),
             normal_mat: nm.to_cols_array_2d(),
             color: d.color.to_array(),
-            params: [if has_tex { 1.0 } else { 0.0 }, 0.0, d.object_id as f32, cutoff],
+            params: [if has_tex { 1.0 } else { 0.0 }, if alpha_tex { 1.0 } else { 0.0 }, d.object_id as f32, cutoff],
         };
         self.queue.write_buffer(&m.obj_buf, 0, bytemuck::bytes_of(&u));
     }
@@ -856,7 +858,7 @@ impl Renderer {
         let mats: Vec<wgpu::BindGroup> = draws
             .iter()
             .map(|d| match d.material.base_color_texture {
-                Some(t) if d.use_texture && t < d.textures.len() => self.texture_bg(d.model_key, t, &d.textures[t]),
+                Some(t) if (d.use_texture || d.material.alpha_mode == AlphaMode::Mask) && t < d.textures.len() => self.texture_bg(d.model_key, t, &d.textures[t]),
                 _ => self.white_bg.clone(),
             })
             .collect();

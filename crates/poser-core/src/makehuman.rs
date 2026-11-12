@@ -136,6 +136,10 @@ pub struct HumanParams {
     pub hand_size: f32,
     pub foot_size: f32,
     pub shoulder_width: f32,
+    /// Worn clothing items (proxy names), hair and eyebrow styles.
+    pub clothes: Vec<String>,
+    pub hair: Option<String>,
+    pub eyebrows: Option<String>,
 }
 
 impl Default for HumanParams {
@@ -159,6 +163,9 @@ impl Default for HumanParams {
             hand_size: 1.0,
             foot_size: 1.0,
             shoulder_width: 1.0,
+            clothes: vec![],
+            hair: None,
+            eyebrows: Some("eyebrow001".into()),
         }
     }
 }
@@ -372,6 +379,20 @@ pub fn build(p: &HumanParams) -> Model {
         }
     }
     map.compute_tpose(&skel);
+    // Clothing hides the body skin underneath.
+    let worn: Vec<&ProxyDef> = proxies()
+        .iter()
+        .filter(|d| p.clothes.contains(&d.name) || p.hair.as_ref() == Some(&d.name) || p.eyebrows.as_ref() == Some(&d.name))
+        .collect();
+    let mut hidden = vec![false; pos.len()];
+    for d in &worn {
+        for v in &d.deletes {
+            if let Some(h) = hidden.get_mut(*v as usize) {
+                *h = true;
+            }
+        }
+    }
+    let body_tris: Vec<[u32; 3]> = a.tris.iter().filter(|t| !t.iter().all(|i| hidden[*i as usize])).copied().collect();
     // Body mesh (compact).
     let mut remap = vec![u32::MAX; pos.len()];
     let mut mesh = Mesh { name: "Body".into(), rigid_transform: Mat4::IDENTITY, ..Default::default() };
@@ -381,7 +402,7 @@ pub fn build(p: &HumanParams) -> Model {
             mesh.positions.push(pos[i]);
         }
     }
-    mesh.indices = a.tris.iter().flat_map(|t| t.iter().map(|i| remap[*i as usize])).collect();
+    mesh.indices = body_tris.iter().flat_map(|t| t.iter().map(|i| remap[*i as usize])).collect();
     let mut per: Vec<Vec<(u16, f32)>> = vec![vec![]; mesh.positions.len()];
     for (bi, b) in a.bones.iter().enumerate() {
         for (v, w) in &b.weights {
@@ -409,12 +430,37 @@ pub fn build(p: &HumanParams) -> Model {
     }
     mesh.compute_normals();
     mesh.sanitize();
+    let mut vweights: Vec<Vec<(u16, f32)>> = vec![vec![]; pos.len()];
+    for (bi, b) in a.bones.iter().enumerate() {
+        for (v, w) in &b.weights {
+            if let Some(x) = vweights.get_mut(*v as usize) {
+                x.push((bi as u16, *w));
+            }
+        }
+    }
     let mut model = Model::empty("Human", SourceFormat::Procedural);
     model.materials = vec![
         Material { name: "Skin".into(), base_color: Vec4::new(0.86, 0.72, 0.64, 1.0), ..Default::default() },
         Material { name: "Eyes".into(), base_color: Vec4::new(0.95, 0.95, 0.95, 1.0), ..Default::default() },
     ];
     model.meshes.push(mesh);
+    for d in &worn {
+        let mat = model.materials.len();
+        let tex = decode_texture(&d.name, &d.texture).map(|t| {
+            model.textures.push(t);
+            model.textures.len() - 1
+        });
+        model.materials.push(Material {
+            name: d.name.clone(),
+            base_color: if tex.is_some() { Vec4::ONE } else { d.color.extend(1.0) },
+            base_color_texture: tex,
+            alpha_mode: if d.alpha { crate::model::AlphaMode::Mask } else { crate::model::AlphaMode::Opaque },
+            alpha_cutoff: 0.45,
+            double_sided: true,
+            clay_shade: if d.category == "hair" || d.category == "eyebrows" { 0.45 } else { 0.78 },
+        });
+        model.meshes.push(fit_proxy(d, &pos, &vweights, mat));
+    }
     // Simple eyeballs in the sockets.
     for eye in ["eye.L", "eye.R"] {
         if let Some(e) = skel.find(eye) {
@@ -462,4 +508,146 @@ mod tests {
             assert!((hi.y - lo.y - p.height).abs() < 0.05, "{name}: {}", hi.y - lo.y);
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Clothes / hair / eyebrows (MakeHuman CC0 proxies, fitted to the morphed body).
+
+static PROXIES: &[u8] = include_bytes!("../../../assets/makehuman/proxies.bin.gz");
+
+pub struct ProxyDef {
+    pub name: String,
+    pub category: String,
+    refs: Vec<([u32; 3], [f32; 3], [f32; 3])>,
+    scales: [(u32, u32, f32); 3],
+    verts: Vec<(u32, glam::Vec2)>,
+    tris: Vec<u32>,
+    pub deletes: Vec<u32>,
+    color: Vec3,
+    alpha: bool,
+    texture: Vec<u8>,
+}
+
+pub fn proxies() -> &'static [ProxyDef] {
+    static P: OnceLock<Vec<ProxyDef>> = OnceLock::new();
+    P.get_or_init(|| parse_proxies().unwrap_or_default())
+}
+
+pub fn proxy_names(category: &str) -> Vec<&'static str> {
+    proxies().iter().filter(|p| p.category == category).map(|p| p.name.as_str()).collect()
+}
+
+fn parse_proxies() -> Option<Vec<ProxyDef>> {
+    let mut raw = vec![];
+    flate2::read::GzDecoder::new(PROXIES).read_to_end(&mut raw).ok()?;
+    if &raw[0..4] != b"MHP1" {
+        return None;
+    }
+    let b = &raw;
+    let mut p = 4usize;
+    let u = |p: &mut usize| {
+        let v = u32::from_le_bytes(b[*p..*p + 4].try_into().unwrap());
+        *p += 4;
+        v
+    };
+    let f = |p: &mut usize| {
+        let v = f32::from_le_bytes(b[*p..*p + 4].try_into().unwrap());
+        *p += 4;
+        v
+    };
+    let st = |p: &mut usize| {
+        let n = u16::from_le_bytes([b[*p], b[*p + 1]]) as usize;
+        let s = String::from_utf8_lossy(&b[*p + 2..*p + 2 + n]).to_string();
+        *p += 2 + n;
+        s
+    };
+    let count = u(&mut p);
+    let mut out = vec![];
+    for _ in 0..count {
+        let name = st(&mut p);
+        let category = st(&mut p);
+        let nr = u(&mut p) as usize;
+        let mut refs = Vec::with_capacity(nr);
+        for _ in 0..nr {
+            let r = [u(&mut p), u(&mut p), u(&mut p)];
+            let w = [f(&mut p), f(&mut p), f(&mut p)];
+            let o = [f(&mut p), f(&mut p), f(&mut p)];
+            refs.push((r, w, o));
+        }
+        let mut scales = [(0, 0, 1.0); 3];
+        for sc in &mut scales {
+            *sc = (u(&mut p), u(&mut p), f(&mut p));
+        }
+        let nv = u(&mut p) as usize;
+        let verts = (0..nv).map(|_| (u(&mut p), glam::Vec2::new(f(&mut p), f(&mut p)))).collect();
+        let nt = u(&mut p) as usize;
+        let tris = (0..nt).map(|_| u(&mut p)).collect();
+        let nd = u(&mut p) as usize;
+        let deletes = (0..nd).map(|_| u(&mut p)).collect();
+        let color = Vec3::new(f(&mut p), f(&mut p), f(&mut p));
+        let alpha = b[p] != 0;
+        p += 1;
+        let ntex = u(&mut p) as usize;
+        let texture = b[p..p + ntex].to_vec();
+        p += ntex;
+        out.push(ProxyDef { name, category, refs, scales, verts, tris, deletes, color, alpha, texture });
+    }
+    Some(out)
+}
+
+/// Fit a proxy to morphed full-index positions, inheriting skin weights.
+fn fit_proxy(def: &ProxyDef, pos: &[Vec3], vweights: &[Vec<(u16, f32)>], material: usize) -> Mesh {
+    let axis = |i: usize, v: Vec3| [v.x, v.y, v.z][i];
+    let scale: [f32; 3] = std::array::from_fn(|i| {
+        let (a, b, r) = def.scales[i];
+        match (pos.get(a as usize), pos.get(b as usize)) {
+            (Some(pa), Some(pb)) if r.abs() > 1e-6 => (axis(i, *pa) - axis(i, *pb)).abs() / r,
+            _ => 0.1,
+        }
+    });
+    let mut m = Mesh { name: def.name.clone(), material, rigid_transform: Mat4::IDENTITY, ..Default::default() };
+    for (v, uv) in &def.verts {
+        let (r, w, o) = def.refs[*v as usize];
+        let mut pnt = Vec3::new(o[0] * scale[0], o[1] * scale[1], o[2] * scale[2]);
+        let mut acc: Vec<(u16, f32)> = vec![];
+        for k in 0..3 {
+            if let Some(q) = pos.get(r[k] as usize) {
+                pnt += *q * w[k];
+            }
+            for (bone, bw) in vweights.get(r[k] as usize).map(|x| x.as_slice()).unwrap_or(&[]) {
+                match acc.iter_mut().find(|x| x.0 == *bone) {
+                    Some(e) => e.1 += bw * w[k],
+                    None => acc.push((*bone, bw * w[k])),
+                }
+            }
+        }
+        acc.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let s: f32 = acc.iter().take(4).map(|x| x.1.max(0.0)).sum();
+        let mut j = [0u16; 4];
+        let mut ww = [1.0, 0.0, 0.0, 0.0];
+        if s > 1e-6 {
+            ww = [0.0; 4];
+            for (k, (bone, x)) in acc.iter().take(4).enumerate() {
+                j[k] = *bone;
+                ww[k] = x.max(0.0) / s;
+            }
+        }
+        m.positions.push(pnt);
+        m.uvs.push(*uv);
+        m.joints.push(j);
+        m.weights.push(ww);
+    }
+    m.indices = def.tris.clone();
+    m.compute_normals();
+    m.sanitize();
+    m
+}
+
+fn decode_texture(name: &str, bytes: &[u8]) -> Option<crate::model::TextureData> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (w, h) = img.dimensions();
+    Some(crate::model::TextureData { name: name.into(), width: w, height: h, rgba: std::sync::Arc::new(img.into_raw()) })
 }

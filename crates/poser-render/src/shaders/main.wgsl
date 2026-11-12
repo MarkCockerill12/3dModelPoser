@@ -192,6 +192,8 @@ fn fs_mesh(i: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32
     var base = obj.color;
     if (obj.params.x > 0.5) {
         base = base * textureSample(base_tex, base_samp, i.uv);
+    } else if (obj.params.y > 0.5) {
+        base.a = base.a * textureSample(base_tex, base_samp, i.uv).a;
     }
     if (obj.params.w >= 0.0 && base.a < obj.params.w) {
         discard;
@@ -218,7 +220,7 @@ fn fs_info(i: VOut, @builtin(front_facing) front: bool) -> InfoOut {
     if (!front) {
         n = -n;
     }
-    if (obj.params.x > 0.5 && obj.params.w >= 0.0) {
+    if ((obj.params.x > 0.5 || obj.params.y > 0.5) && obj.params.w >= 0.0) {
         let a = obj.color.a * textureSample(base_tex, base_samp, i.uv).a;
         if (a < obj.params.w) {
             discard;

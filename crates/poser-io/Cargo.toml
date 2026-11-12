@@ -17,3 +17,4 @@ bytemuck.workspace = true
 
 [dev-dependencies]
 poser-rig.workspace = true
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
