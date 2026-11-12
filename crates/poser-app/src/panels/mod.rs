@@ -55,6 +55,10 @@ pub fn top_bar(app: &mut PoserApp, ui: &mut egui::Ui) {
                     app.export_model_dialog(true);
                     ui.close();
                 }
+                if ui.button("Export rigged model (GLB/FBX)...").on_hover_text("Selected figure with skeleton, skin weights and current pose").clicked() {
+                    app.export_rigged_dialog();
+                    ui.close();
+                }
                 if ui.button("Export whole scene (GLB/OBJ)...").clicked() {
                     app.export_model_dialog(false);
                     ui.close();

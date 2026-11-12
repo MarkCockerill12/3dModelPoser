@@ -1098,6 +1098,32 @@ impl PoserApp {
         self.needs_render = true;
     }
 
+    /// Export the selected figure rigged (skeleton + weights + morphs), in its current pose.
+    pub fn export_rigged_dialog(&mut self) {
+        let Some(f) = self.sel.figure else {
+            self.status = "Select a figure to export".into();
+            return;
+        };
+        let fig = &self.scene.figures[f];
+        if !fig.model.has_skeleton() {
+            self.status = "This model has no skeleton: use Export posed model, or auto-rig it first".into();
+            return;
+        }
+        let ext = ["glb", "fbx"];
+        let Some(path) = rfd::FileDialog::new().add_filter("glTF binary (.glb)", &ext[..1]).add_filter("FBX (.fbx)", &ext[1..]).set_file_name(format!("{}.glb", fig.name)).save_file() else { return };
+        let morphs: Vec<(String, f32)> = fig.morph_names.iter().cloned().zip(fig.morph_weights.iter().copied()).collect();
+        let is_fbx = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("fbx"));
+        let r = if is_fbx {
+            poser_io::export_fbx::write_fbx(&path, &fig.model, &fig.shapes, &fig.pose.locals, &fig.transform)
+        } else {
+            poser_io::export_rigged::write_rigged_glb(&path, &fig.model, &fig.shapes, &fig.pose.locals, &morphs, &fig.transform)
+        };
+        self.status = match r {
+            Ok(()) => format!("Exported rigged {} to {}", fig.name, path.display()),
+            Err(e) => format!("Export failed: {e:#}"),
+        };
+    }
+
     /// Export posed figures as static meshes (GLB or OBJ).
     pub fn export_model_dialog(&mut self, only_selected: bool) {
         let Some(path) = rfd::FileDialog::new()

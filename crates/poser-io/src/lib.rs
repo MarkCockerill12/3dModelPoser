@@ -1,5 +1,7 @@
 //! Importers / exporters for 3D Model Poser.
 pub mod export;
+pub mod export_fbx;
+pub mod export_rigged;
 pub mod fbx_import;
 pub mod gltf_import;
 pub mod pmx_import;
