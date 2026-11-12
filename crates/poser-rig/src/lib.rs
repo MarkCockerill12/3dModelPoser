@@ -200,6 +200,11 @@ pub fn prepare_for_rigging(model: &Model) -> Model {
 
 /// Bone layout derived from markers: (name, parent, position, humanoid bone).
 pub fn skeleton_from_markers(m: &Markers) -> (Skeleton, HumanoidMap) {
+    skeleton_from_markers_with_hands(m, None)
+}
+
+/// Skeleton from markers; with mesh points, finger bones are fitted to each hand.
+pub fn skeleton_from_markers_with_hands(m: &Markers, points: Option<&[Vec3]>) -> (Skeleton, HumanoidMap) {
     let h = (m.top - m.floor).max(1e-3);
     let cx = (m.left_knee.x + m.right_knee.x + m.left_wrist.x + m.right_wrist.x) * 0.25;
     let cz = m.groin.z;
@@ -250,7 +255,39 @@ pub fn skeleton_from_markers(m: &Markers) -> (Skeleton, HumanoidMap) {
         let la = add(&format!("LowerArm.{side}"), Some(ua), elbow, Some(hb(H::LeftLowerArm)));
         let hand = add(&format!("Hand.{side}"), Some(la), wrist, Some(hb(H::LeftHand)));
         let fdir = (wrist - elbow).normalize_or(Vec3::X * sx);
-        add(&format!("HandTip.{side}"), Some(hand), wrist + fdir * h * 0.1, None);
+        match points.and_then(|pts| measure_hand(pts, wrist, fdir, h)) {
+            Some((len, width)) => {
+                let wv = fdir.cross(Vec3::Y).normalize_or(Vec3::Z) * fdir.x.signum();
+                let fingers = [
+                    (poser_core::humanoid::Finger::Index, 0.62, 0.95),
+                    (poser_core::humanoid::Finger::Middle, 0.2, 1.0),
+                    (poser_core::humanoid::Finger::Ring, -0.2, 0.94),
+                    (poser_core::humanoid::Finger::Little, -0.6, 0.78),
+                ];
+                let sd = if left { poser_core::humanoid::Side::Left } else { poser_core::humanoid::Side::Right };
+                for (f, off, lf) in fingers {
+                    let total = len * 0.58 * lf;
+                    let mut pos = wrist + fdir * len * 0.42 + wv * off * width * 0.5;
+                    let mut parent = hand;
+                    for (seg, frac) in [0.45, 0.3, 0.25].iter().enumerate() {
+                        parent = add(&format!("{f:?}{seg}.{side}"), Some(parent), pos, Some(poser_core::humanoid::finger_bone(sd, f, seg).unwrap()));
+                        pos += fdir * total * frac;
+                    }
+                    add(&format!("{f:?}Tip.{side}"), Some(parent), pos, None);
+                }
+                let tdir = (fdir * 0.6 + wv * 0.8).normalize();
+                let mut pos = wrist + fdir * len * 0.1 + wv * width * 0.4;
+                let mut parent = hand;
+                for (seg, frac) in [0.38, 0.32, 0.3].iter().enumerate() {
+                    parent = add(&format!("Thumb{seg}.{side}"), Some(parent), pos, Some(poser_core::humanoid::finger_bone(sd, poser_core::humanoid::Finger::Thumb, seg).unwrap()));
+                    pos += tdir * len * 0.5 * frac;
+                }
+                add(&format!("ThumbTip.{side}"), Some(parent), pos, None);
+            }
+            None => {
+                add(&format!("HandTip.{side}"), Some(hand), wrist + fdir * h * 0.1, None);
+            }
+        }
         let hip_j = Vec3::new(cx + (knee.x - cx) * 0.95, m.groin.y + h * 0.02, cz);
         let ul = add(&format!("UpperLeg.{side}"), Some(b_hips), hip_j, Some(hb(H::LeftUpperLeg)));
         let ll = add(&format!("LowerLeg.{side}"), Some(ul), knee, Some(hb(H::LeftLowerLeg)));
@@ -273,6 +310,27 @@ pub fn skeleton_from_markers(m: &Markers) -> (Skeleton, HumanoidMap) {
     (skel, map)
 }
 
+/// (hand length, palm width) measured from mesh points beyond the wrist.
+fn measure_hand(pts: &[Vec3], wrist: Vec3, dir: Vec3, h: f32) -> Option<(f32, f32)> {
+    let wv = dir.cross(Vec3::Y).normalize_or(Vec3::Z);
+    let near: Vec<(f32, f32)> = pts
+        .iter()
+        .filter_map(|p| {
+            let d = *p - wrist;
+            let t = d.dot(dir);
+            let radial = (d - dir * t).length();
+            (t > 0.0 && t < h * 0.14 && radial < h * 0.06).then(|| (t, d.dot(wv)))
+        })
+        .collect();
+    if near.len() < 20 {
+        return None;
+    }
+    let len = near.iter().map(|x| x.0).fold(0.0, f32::max);
+    let band: Vec<f32> = near.iter().filter(|x| x.0 > len * 0.3 && x.0 < len * 0.5).map(|x| x.1).collect();
+    let width = if band.is_empty() { len * 0.45 } else { band.iter().fold(f32::MIN, |a, b| a.max(*b)) - band.iter().fold(f32::MAX, |a, b| a.min(*b)) };
+    (len > h * 0.05).then_some((len, width.clamp(len * 0.3, len * 0.7)))
+}
+
 /// Distance from p to segment ab.
 fn seg_dist(p: Vec3, a: Vec3, b: Vec3) -> f32 {
     let ab = b - a;
@@ -282,11 +340,44 @@ fn seg_dist(p: Vec3, a: Vec3, b: Vec3) -> f32 {
 
 /// Bone-heat skin weights for every vertex of `positions` (model space, all meshes concatenated).
 /// `tris` index into `positions`. Returns per-vertex (joint, weight) top-4.
-pub fn heat_weights(positions: &[Vec3], normals: &[Vec3], tris: &[[u32; 3]], skel: &Skeleton, deform: &[bool]) -> Result<Vec<([u16; 4], [f32; 4])>> {
+pub fn heat_weights(positions: &[Vec3], normals: &[Vec3], tris: &[[u32; 3]], skel: &Skeleton, deform: &[bool], region: &[Option<(Vec3, f32)>]) -> Result<Vec<([u16; 4], [f32; 4])>> {
     let n_in = positions.len();
     if n_in == 0 {
         return Ok(vec![]);
     }
+    // 0) Connected parts (seams welded by position) - clusters never cross parts.
+    let extent0 = positions.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(a, b), p| (a.min(*p), b.max(*p)));
+    let extent0 = (extent0.1 - extent0.0).max_element().max(1e-6);
+    let mut parent: Vec<u32> = (0..n_in as u32).collect();
+    fn find(p: &mut [u32], mut x: u32) -> u32 {
+        while p[x as usize] != x {
+            p[x as usize] = p[p[x as usize] as usize];
+            x = p[x as usize];
+        }
+        x
+    }
+    let union = |p: &mut Vec<u32>, a: u32, b: u32| {
+        let (ra, rb) = (find(p, a), find(p, b));
+        if ra != rb {
+            p[ra as usize] = rb;
+        }
+    };
+    for t in tris {
+        union(&mut parent, t[0], t[1]);
+        union(&mut parent, t[1], t[2]);
+    }
+    let eps = extent0 * 1e-5;
+    let mut weld: HashMap<(i64, i64, i64), u32> = HashMap::new();
+    for (i, p) in positions.iter().enumerate() {
+        let k = ((p.x / eps) as i64, (p.y / eps) as i64, (p.z / eps) as i64);
+        match weld.get(&k) {
+            Some(&j) => union(&mut parent, i as u32, j),
+            None => {
+                weld.insert(k, i as u32);
+            }
+        }
+    }
+    let comp_of: Vec<u32> = (0..n_in as u32).map(|i| find(&mut parent, i)).collect();
     // 1) Vertex clustering keeps the solve small (also welds UV seams / split normals).
     let (lo, hi) = positions.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(a, b), p| (a.min(*p), b.max(*p)));
     let extent = (hi - lo).max_element().max(1e-6);
@@ -296,12 +387,12 @@ pub fn heat_weights(positions: &[Vec3], normals: &[Vec3], tris: &[[u32; 3]], ske
     let mut centers: Vec<Vec3>;
     let mut nsum: Vec<Vec3>;
     loop {
-        let mut map: HashMap<(i32, i32, i32), u32> = HashMap::new();
+        let mut map: HashMap<(u32, i32, i32, i32), u32> = HashMap::new();
         cluster_of = Vec::with_capacity(n_in);
         let mut sums: Vec<(Vec3, u32)> = vec![];
         nsum = vec![];
         for (vi, p) in positions.iter().enumerate() {
-            let k = (((p.x - lo.x) / cell) as i32, ((p.y - lo.y) / cell) as i32, ((p.z - lo.z) / cell) as i32);
+            let k = (comp_of[vi], ((p.x - lo.x) / cell) as i32, ((p.y - lo.y) / cell) as i32, ((p.z - lo.z) / cell) as i32);
             let id = *map.entry(k).or_insert_with(|| {
                 sums.push((Vec3::ZERO, 0));
                 nsum.push(Vec3::ZERO);
@@ -370,7 +461,12 @@ pub fn heat_weights(positions: &[Vec3], normals: &[Vec3], tris: &[[u32; 3]], ske
         let nrm = nsum[i].normalize_or_zero();
         let mut d: Vec<f32> = segs
             .iter()
-            .map(|(_, a, b)| {
+            .map(|(bi, a, b)| {
+                if let Some(Some((rc, rr))) = region.get(*bi) {
+                    if c.distance(*rc) > *rr {
+                        return f32::MAX;
+                    }
+                }
                 let q = closest(*c, *a, *b);
                 let dist = (q - *c).length();
                 let facing = if nrm == Vec3::ZERO || dist < 1e-6 { -1.0 } else { nrm.dot((q - *c) / dist) };
@@ -413,7 +509,10 @@ pub fn heat_weights(positions: &[Vec3], normals: &[Vec3], tris: &[[u32; 3]], ske
     // 5) Top-4 per cluster, then copy to the original vertices.
     let mut cw: Vec<([u16; 4], [f32; 4])> = Vec::with_capacity(n);
     for i in 0..n {
-        let mut ws: Vec<(usize, f32)> = (0..nb).map(|k| (segs[k].0, rhs[(i, k)].max(0.0) as f32)).filter(|(_, w)| *w > 0.01).collect();
+        let mut ws: Vec<(usize, f32)> = (0..nb)
+            .map(|k| (segs[k].0, rhs[(i, k)].max(0.0) as f32))
+            .filter(|(b, w)| *w > 0.01 && !matches!(region.get(*b), Some(Some((rc, rr))) if centers[i].distance(*rc) > *rr))
+            .collect();
         ws.sort_by(|a, b| b.1.total_cmp(&a.1));
         ws.truncate(4);
         let s: f32 = ws.iter().map(|w| w.1).sum();
@@ -436,39 +535,9 @@ pub fn heat_weights(positions: &[Vec3], normals: &[Vec3], tris: &[[u32; 3]], ske
     let mut out: Vec<([u16; 4], [f32; 4])> = cluster_of.iter().map(|c| cw[*c as usize]).collect();
     // Small separate parts (props, eyes, teeth, buttons) move rigidly with their nearest bone.
     // Components are found on the original topology, welding split seam vertices by position.
-    let mut parent: Vec<u32> = (0..n_in as u32).collect();
-    fn find(p: &mut [u32], mut x: u32) -> u32 {
-        while p[x as usize] != x {
-            p[x as usize] = p[p[x as usize] as usize];
-            x = p[x as usize];
-        }
-        x
-    }
-    let union = |p: &mut Vec<u32>, a: u32, b: u32| {
-        let (ra, rb) = (find(p, a), find(p, b));
-        if ra != rb {
-            p[ra as usize] = rb;
-        }
-    };
-    for t in tris {
-        union(&mut parent, t[0], t[1]);
-        union(&mut parent, t[1], t[2]);
-    }
-    let eps = extent * 1e-5;
-    let mut weld: HashMap<(i64, i64, i64), u32> = HashMap::new();
-    for (i, p) in positions.iter().enumerate() {
-        let k = ((p.x / eps) as i64, (p.y / eps) as i64, (p.z / eps) as i64);
-        match weld.get(&k) {
-            Some(&j) => union(&mut parent, i as u32, j),
-            None => {
-                weld.insert(k, i as u32);
-            }
-        }
-    }
     let mut groups: HashMap<u32, Vec<usize>> = HashMap::new();
     for i in 0..n_in {
-        let r = find(&mut parent, i as u32);
-        groups.entry(r).or_default().push(i);
+        groups.entry(comp_of[i]).or_default().push(i);
     }
     let biggest = groups.values().map(|g| g.len()).max().unwrap_or(0);
     for g in groups.values() {
@@ -494,7 +563,8 @@ pub fn heat_weights(positions: &[Vec3], normals: &[Vec3], tris: &[[u32; 3]], ske
 
 /// Rig an unrigged (or re-rig any) model as a humanoid. Returns a new model.
 pub fn auto_rig(model: &Model, markers: &Markers) -> Result<Model> {
-    let (skel, mut map) = skeleton_from_markers(markers);
+    let pts = sample_points(model, 200_000);
+    let (skel, mut map) = skeleton_from_markers_with_hands(markers, Some(&pts));
     let mut out = model.clone();
     // Bring every mesh into model space at rest (drops any previous rig).
     let rest = model.rest_positions();
@@ -529,15 +599,31 @@ pub fn auto_rig(model: &Model, markers: &Markers) -> Result<Model> {
         }
     }
     let deform: Vec<bool> = skel.bones.iter().map(|b| !b.name.contains("Tip") && !b.name.contains("HeadTop")).collect();
+    let _ = &pts;
     let mut skel = skel;
     let prefer: Vec<Option<usize>> = (0..skel.len()).map(|i| map.human_of(i).and_then(|h| h.tail_child()).and_then(|t| map.get(t))).collect();
     skel.compute_axes(|i| prefer[i]);
-    let weights = heat_weights(&all, &alln, &tris, &skel, &deform)?;
+    // Finger bones only influence the hand they belong to.
+    let world = skel.rest_world();
+    let region: Vec<Option<(Vec3, f32)>> = (0..skel.len())
+        .map(|i| {
+            let h = map.human_of(i)?;
+            if !h.is_finger() {
+                return None;
+            }
+            let hand = map.get(if h.side() == poser_core::humanoid::Side::Left { H::LeftHand } else { H::RightHand })?;
+            let c = world[hand].w_axis.truncate();
+            let r = (world[i].w_axis.truncate() - c).length() * 1.6 + skel.bones[i].length * 2.0;
+            Some((c, r))
+        })
+        .collect();
+    let weights = heat_weights(&all, &alln, &tris, &skel, &deform, &region)?;
     for (mi, m) in out.meshes.iter_mut().enumerate() {
         let o = offsets[mi];
         m.joints = (0..m.positions.len()).map(|i| weights[o + i].0).collect();
         m.weights = (0..m.positions.len()).map(|i| weights[o + i].1).collect();
         m.morphs.clear();
+        m.linear_blend = true;
     }
     map.compute_tpose(&skel);
     out.skeleton = skel;

@@ -57,7 +57,7 @@ pub fn deform(mesh: &Mesh, morph_weights: &[f32], skin: &[Mat4], rigid: Mat4, ou
     }
     if mesh.is_skinned() && !skin.is_empty() {
         let nmats: Vec<Mat3> = skin.iter().map(|m| Mat3::from_mat4(*m).inverse().transpose()).collect();
-        let dqs: Vec<Option<(Quat, Quat)>> = if DUAL_QUATERNION.load(Ordering::Relaxed) { skin.iter().map(to_dq).collect() } else { vec![None; skin.len()] };
+        let dqs: Vec<Option<(Quat, Quat)>> = if DUAL_QUATERNION.load(Ordering::Relaxed) && !mesh.linear_blend { skin.iter().map(to_dq).collect() } else { vec![None; skin.len()] };
         let joints = &mesh.joints;
         let weights = &mesh.weights;
         let nj = skin.len();

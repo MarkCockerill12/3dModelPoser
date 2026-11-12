@@ -271,6 +271,10 @@ impl PoserApp {
         app.sel = Selection { figure: Some(idx), bone: None };
         app.frame_all(false);
         let args: Vec<String> = std::env::args().skip(1).collect();
+        if std::env::var_os("POSER_LBS").is_some() {
+            poser_core::skinning::DUAL_QUATERNION.store(false, std::sync::atomic::Ordering::Relaxed);
+            app.opts.dual_quaternion = false;
+        }
         if let Some(i) = args.iter().position(|a| a == "--preset-sheet") {
             app.sheet_model = args.get(i + 2).map(PathBuf::from);
             app.build_preset_sheet(args.get(i + 1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("presets.png")));

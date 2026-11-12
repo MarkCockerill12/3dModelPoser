@@ -92,6 +92,8 @@ pub struct Mesh {
     pub material: usize,
     /// Optional per-vertex part id (used by procedural mannequin for click parts).
     pub part_ids: Vec<u16>,
+    /// Force linear blend skinning (weights authored/approximated for LBS).
+    pub linear_blend: bool,
 }
 
 impl Mesh {
