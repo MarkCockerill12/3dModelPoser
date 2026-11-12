@@ -341,6 +341,7 @@ fn pose_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
     ui.add_enabled(app.opts.mode == crate::app::PoseMode::Guided, egui::Checkbox::new(&mut app.opts.limits, "Joint limits (Guided mode)"));
     ui.checkbox(&mut app.opts.local_axes, "Rings follow the bone (local axes)");
     ui.checkbox(&mut app.opts.show_rings, "Show rotation rings");
+    ui.checkbox(&mut app.opts.spine_spread, "Spread spine rotation (smooth bend)");
     ui.checkbox(&mut app.opts.keep_feet_planted, "Keep feet planted when moving hips");
     if ui.checkbox(&mut app.scene.render.joint_stress, "Highlight stressed joints").changed() {
         *edited = true;

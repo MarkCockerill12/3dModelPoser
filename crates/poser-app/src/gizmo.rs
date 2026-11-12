@@ -64,6 +64,8 @@ pub enum Ring {
     Y,
     Z,
     View,
+    /// Elbow/knee swing around the shoulder-wrist (hip-ankle) line.
+    Swing,
 }
 
 pub struct RingSet {
@@ -71,6 +73,8 @@ pub struct RingSet {
     /// World-space axes: [X (side), Y (along bone / twist), Z].
     pub axes: [Vec3; 3],
     pub radius: f32,
+    /// (centre, axis, radius) of the swing donut when a limb is selected.
+    pub swing: Option<(Vec3, Vec3, f32)>,
 }
 
 pub const RING_PX: f32 = 70.0;
@@ -90,7 +94,7 @@ impl RingSet {
         } else {
             [Vec3::X, Vec3::Y, Vec3::Z]
         };
-        Self { center, axes, radius: RING_PX * view.world_per_point(center) }
+        Self { center, axes, radius: RING_PX * view.world_per_point(center), swing: None }
     }
 
     pub fn axis(&self, r: Ring, view: &ViewCtx) -> Vec3 {
@@ -99,29 +103,48 @@ impl RingSet {
             Ring::Y => self.axes[1],
             Ring::Z => self.axes[2],
             Ring::View => -view.cam.forward(),
+            Ring::Swing => self.swing.map(|s| s.1).unwrap_or(Vec3::Y),
         }
     }
 
+    fn ring_center(&self, r: Ring) -> Vec3 {
+        match (r, self.swing) {
+            (Ring::Swing, Some(s)) => s.0,
+            _ => self.center,
+        }
+    }
+
+    #[allow(dead_code)]
     fn circle(&self, axis: Vec3, radius: f32, n: usize) -> Vec<Vec3> {
+        self.circle_at(self.center, axis, radius, n)
+    }
+
+    pub fn circle_at(&self, center: Vec3, axis: Vec3, radius: f32, n: usize) -> Vec<Vec3> {
         let u = axis.any_orthonormal_vector();
         let v = axis.cross(u);
         (0..=n)
             .map(|i| {
                 let a = i as f32 / n as f32 * std::f32::consts::TAU;
-                self.center + (u * a.cos() + v * a.sin()) * radius
+                center + (u * a.cos() + v * a.sin()) * radius
             })
             .collect()
     }
 
     fn ring_radius(&self, r: Ring) -> f32 {
+        if let (Ring::Swing, Some(s)) = (r, self.swing) {
+            return s.2;
+        }
         if r == Ring::View { self.radius * 1.18 } else { self.radius }
     }
 
     pub fn hit(&self, view: &ViewCtx, p: Pos2) -> Option<Ring> {
         let mut best: Option<(Ring, f32)> = None;
         let cd = view.project_depth(self.center).map(|x| x.1).unwrap_or(0.0);
-        for r in [Ring::View, Ring::X, Ring::Y, Ring::Z] {
-            let pts = self.circle(self.axis(r, view), self.ring_radius(r), 64);
+        for r in [Ring::View, Ring::X, Ring::Y, Ring::Z, Ring::Swing] {
+            if r == Ring::Swing && self.swing.is_none() {
+                continue;
+            }
+            let pts = self.circle_at(self.ring_center(r), self.axis(r, view), self.ring_radius(r), 64);
             let proj: Vec<Option<(Pos2, f32)>> = pts.iter().map(|q| view.project_depth(*q)).collect();
             for w in proj.windows(2) {
                 if let (Some(a), Some(b)) = (w[0], w[1]) {
@@ -139,13 +162,16 @@ impl RingSet {
 
     pub fn draw(&self, painter: &Painter, view: &ViewCtx, hovered: Option<Ring>, active: Option<Ring>) {
         let cd = view.project_depth(self.center).map(|x| x.1).unwrap_or(0.0);
-        for (r, col) in [(Ring::View, Color32::from_gray(220)), (Ring::X, theme::AXIS_X), (Ring::Y, theme::AXIS_Y), (Ring::Z, theme::AXIS_Z)] {
+        for (r, col) in [(Ring::View, Color32::from_gray(220)), (Ring::X, theme::AXIS_X), (Ring::Y, theme::AXIS_Y), (Ring::Z, theme::AXIS_Z), (Ring::Swing, Color32::from_rgb(255, 170, 60))] {
+            if r == Ring::Swing && self.swing.is_none() {
+                continue;
+            }
             if active.is_some_and(|a| a != r) {
                 continue;
             }
             let hot = hovered == Some(r) || active == Some(r);
             let width = if hot { 3.5 } else { 2.0 };
-            let pts = self.circle(self.axis(r, view), self.ring_radius(r), 72);
+            let pts = self.circle_at(self.ring_center(r), self.axis(r, view), self.ring_radius(r), 72);
             let proj: Vec<Option<(Pos2, f32)>> = pts.iter().map(|q| view.project_depth(*q)).collect();
             for w in proj.windows(2) {
                 if let (Some(a), Some(b)) = (w[0], w[1]) {

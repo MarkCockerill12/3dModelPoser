@@ -116,6 +116,8 @@ pub struct Options {
     pub dual_quaternion: bool,
     /// Viewport resolution multiplier (lower = faster, less memory).
     pub render_scale: f32,
+    /// Rotating one spine joint bends the whole spine smoothly.
+    pub spine_spread: bool,
     pub local_axes: bool,
     pub limits: bool,
     pub emulate_3button: bool,
@@ -251,6 +253,7 @@ impl PoserApp {
                 drag_empty_orbits: true,
                 dual_quaternion: true,
                 render_scale: 1.0,
+                spine_spread: true,
                 local_axes: true,
                 limits: true,
                 emulate_3button: true,

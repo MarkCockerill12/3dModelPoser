@@ -170,7 +170,42 @@ impl PoserApp {
         let bw = *c.pose.world.get(b)?;
         let center = c.world.transform_point3(bw.w_axis.truncate());
         let rot = fig.transform.rotation * mat_rotation(&bw);
-        Some(RingSet::for_bone(center, rot, fig.model.skeleton.bones[b].axis, self.opts.local_axes, view))
+        let mut rs = RingSet::for_bone(center, rot, fig.model.skeleton.bones[b].axis, self.opts.local_axes, view);
+        if let Some((root, mid, end)) = self.swing_chain_for(f, b) {
+            let wp = |i: usize| c.world.transform_point3(c.pose.world[i].w_axis.truncate());
+            let (a, m, e) = (wp(root), wp(mid), wp(end));
+            let axis = (e - a).normalize_or_zero();
+            if axis != Vec3::ZERO {
+                let foot = a + axis * (m - a).dot(axis);
+                let r = (m - foot).length().max(rs.radius * 0.35) * 1.25;
+                rs.swing = Some((foot, axis, r));
+            }
+        }
+        Some(rs)
+    }
+
+    /// (root, mid, end) of the arm/leg containing `b` (for the swing donut).
+    pub fn swing_chain_for(&self, f: usize, b: usize) -> Option<(usize, usize, usize)> {
+        let hm = &self.scene.figures[f].model.humanoid;
+        let h = hm.human_of(b)?;
+        let chain = match h {
+            H::LeftLowerArm | H::LeftHand => [H::LeftUpperArm, H::LeftLowerArm, H::LeftHand],
+            H::RightLowerArm | H::RightHand => [H::RightUpperArm, H::RightLowerArm, H::RightHand],
+            H::LeftLowerLeg | H::LeftFoot => [H::LeftUpperLeg, H::LeftLowerLeg, H::LeftFoot],
+            H::RightLowerLeg | H::RightFoot => [H::RightUpperLeg, H::RightLowerLeg, H::RightFoot],
+            _ => return None,
+        };
+        Some((hm.get(chain[0])?, hm.get(chain[1])?, hm.get(chain[2])?))
+    }
+
+    /// Spine bones that share a bend when one of them is rotated.
+    fn spine_chain(&self, f: usize, b: usize) -> Vec<usize> {
+        let hm = &self.scene.figures[f].model.humanoid;
+        let spine = [H::Spine, H::Chest, H::UpperChest];
+        if !hm.human_of(b).is_some_and(|h| spine.contains(&h)) {
+            return vec![];
+        }
+        spine.iter().filter_map(|h| hm.get(*h)).collect()
     }
 
     fn axis_widget_center(&self, rect: Rect) -> Pos2 {
@@ -380,6 +415,18 @@ impl PoserApp {
                 let eff = get(H::Neck).or(get(H::Head))?;
                 (IkKind::Ccd { chain, effector: eff }, eff)
             }
+            Some(fh) if fh.is_finger() && !(self.opts.mode == crate::app::PoseMode::Free && self.drag_translate) => {
+                // Drag a finger: the whole finger curls towards the cursor.
+                let (side, finger, _) = fh.finger_info()?;
+                let segs: Vec<usize> = (0..3).filter_map(|i| poser_core::humanoid::finger_bone(side, finger, i).and_then(|x| hm.get(x))).collect();
+                let last = *segs.last()?;
+                let tip = m.skeleton.bones[last].children.first().copied();
+                let (chain, eff) = match tip {
+                    Some(t) => (segs.clone(), t),
+                    None => (segs[..segs.len() - 1].to_vec(), last),
+                };
+                (IkKind::Ccd { chain, effector: eff }, eff)
+            }
             _ if self.opts.mode == crate::app::PoseMode::Free && self.drag_translate => (IkKind::Translate { bone }, bone),
             _ => {
                 // FK aim: the bone's tail follows the cursor.
@@ -408,8 +455,9 @@ impl PoserApp {
             Drag::Ring { ring, axis_world, last_angle, tangent, last_pos } => {
                 let (Some(f), Some(b)) = (self.sel.figure, self.sel.bone) else { return };
                 let Some(rs) = self.ring_set(view) else { return };
-                let c = view.project(rs.center).unwrap_or(p);
-                let to_cam = (view.cam.eye() - rs.center).normalize_or(Vec3::Z);
+                let rc = if ring == Ring::Swing { rs.swing.map(|s| s.0).unwrap_or(rs.center) } else { rs.center };
+                let c = view.project(rc).unwrap_or(p);
+                let to_cam = (view.cam.eye() - rc).normalize_or(Vec3::Z);
                 let facing = axis_world.dot(to_cam);
                 let a = screen_angle(c, p);
                 let phi = if facing.abs() > 0.25 || ring == Ring::View {
@@ -419,7 +467,35 @@ impl PoserApp {
                 } else {
                     0.0
                 };
-                if phi.abs() > 1e-6 {
+                if phi.abs() > 1e-6 && ring == Ring::Swing {
+                    self.ensure_undo("Swing limb");
+                    if let Some((root, _, end)) = self.swing_chain_for(f, b) {
+                        let fig = &mut self.scene.figures[f];
+                        let model = fig.model.clone();
+                        let shapes = fig.shapes_opt().map(|s| s.to_vec());
+                        ik::swing_chain(&model.skeleton, shapes.as_deref(), &mut fig.pose.locals, root, end, true, phi);
+                        fig.touch();
+                        self.stop_anim(f);
+                    }
+                } else if phi.abs() > 1e-6 && self.opts.spine_spread && self.spine_chain(f, b).len() > 1 {
+                    self.ensure_undo("Bend spine");
+                    let chain = self.spine_chain(f, b);
+                    let fig = &mut self.scene.figures[f];
+                    let fr = fig.transform.rotation;
+                    let ax = (fr.inverse() * axis_world).normalize();
+                    let model = fig.model.clone();
+                    let step = phi / chain.len() as f32;
+                    for bone in chain.iter().rev() {
+                        let w = model.skeleton.evaluate(&fig.pose.locals, fig.shapes_opt()).world;
+                        ik::rotate_bone_world(&model.skeleton, &w, &mut fig.pose.locals, *bone, Quat::from_axis_angle(ax, step));
+                    }
+                    for bone in chain {
+                        self.clamp_bone(f, bone);
+                    }
+                    self.solve_pins(f, Some(b));
+                    self.scene.figures[f].touch();
+                    self.stop_anim(f);
+                } else if phi.abs() > 1e-6 {
                     self.ensure_undo("Rotate bone");
                     let fig = &mut self.scene.figures[f];
                     let fr = fig.transform.rotation;
