@@ -55,6 +55,7 @@ pub enum IkKind {
     Hips,
     Ccd { chain: Vec<usize>, effector: usize },
     Aim { bone: usize },
+    Translate { bone: usize },
 }
 
 #[derive(Clone, Debug)]
@@ -63,6 +64,7 @@ pub enum Drag {
     Ik { figure: usize, kind: IkKind, effector: usize, grab_offset: Vec3, plane_point: Vec3 },
     MoveFigure { figure: usize, grab_offset: Vec3, plane_point: Vec3 },
     RotateFigure { figure: usize },
+    Orbit { last: egui::Pos2, pan: bool },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -89,11 +91,32 @@ pub struct Modal {
     pub trackball: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PoseMode {
+    /// Design Doll feel: anatomical limits, IK stays natural ("on rails").
+    Guided,
+    /// Blender feel: no limits, any bone can rotate or move anywhere.
+    Free,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ScrollMode {
+    /// Mouse wheel zooms, precision-touchpad scrolling orbits.
+    Auto,
+    /// Every scroll zooms (smooth-scrolling mice).
+    AlwaysZoom,
+    /// Every scroll orbits (Shift pans, Ctrl zooms).
+    AlwaysOrbit,
+}
+
 pub struct Options {
+    pub mode: PoseMode,
+    pub scroll: ScrollMode,
+    pub drag_empty_orbits: bool,
+    pub dual_quaternion: bool,
     pub local_axes: bool,
     pub limits: bool,
     pub emulate_3button: bool,
-    pub touchpad_orbit: bool,
     pub show_rings: bool,
     pub keep_feet_planted: bool,
 }
@@ -174,6 +197,9 @@ pub struct PoserApp {
     pub rig: Option<RigSession>,
     pub sheet_model: Option<PathBuf>,
     pub rig_markers: HashMap<u64, poser_rig::Markers>,
+    /// Free mode: Ctrl+drag a bone moves it instead of rotating.
+    pub drag_translate: bool,
+    pub ctrl_down: bool,
 }
 
 impl PoserApp {
@@ -207,10 +233,13 @@ impl PoserApp {
             morph_filter: String::new(),
             new_pose_name: "My pose".into(),
             opts: Options {
+                mode: PoseMode::Guided,
+                scroll: ScrollMode::Auto,
+                drag_empty_orbits: true,
+                dual_quaternion: true,
                 local_axes: true,
                 limits: true,
                 emulate_3button: true,
-                touchpad_orbit: true,
                 show_rings: true,
                 keep_feet_planted: true,
             },
@@ -235,6 +264,8 @@ impl PoserApp {
             rig: None,
             sheet_model: None,
             rig_markers: HashMap::new(),
+            drag_translate: false,
+            ctrl_down: false,
         };
         let idx = app.add_human(HumanParams::default(), "Human");
         app.sel = Selection { figure: Some(idx), bone: None };
@@ -559,7 +590,7 @@ impl PoserApp {
 
     /// Clamp a bone to its joint limits (normalised frame).
     pub fn clamp_bone(&mut self, idx: usize, bone: usize) {
-        if !self.opts.limits {
+        if !self.opts.limits || self.opts.mode == PoseMode::Free {
             return;
         }
         let Some(lim) = self.limit_for(idx, bone) else { return };

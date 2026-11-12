@@ -175,6 +175,7 @@ impl PoserApp {
                 i.pointer.latest_pos(),
             )
         });
+        self.ctrl_down = mods.ctrl;
         let alt_nav = self.opts.emulate_3button && mods.alt;
         if self.rig.is_some() {
             self.rig_pointer(view, pointer, latest, pressed && !alt_nav && resp.contains_pointer(), down, released);
@@ -281,6 +282,7 @@ impl PoserApp {
     }
 
     fn on_press(&mut self, view: &ViewCtx, p: Pos2, shift: bool) {
+        self.drag_translate = self.ctrl_down;
         // Navigation gizmo (click an axis bubble).
         let wc = self.axis_widget_center(view.rect);
         if (p - wc).length() < 50.0 {
@@ -333,6 +335,9 @@ impl PoserApp {
                     self.sel = Selection::default();
                     self.needs_render = true;
                 }
+                if self.opts.drag_empty_orbits {
+                    self.drag = Some(Drag::Orbit { last: p, pan: shift });
+                }
             }
         }
     }
@@ -363,6 +368,7 @@ impl PoserApp {
                 let eff = get(H::Neck).or(get(H::Head))?;
                 (IkKind::Ccd { chain, effector: eff }, eff)
             }
+            _ if self.opts.mode == crate::app::PoseMode::Free && self.drag_translate => (IkKind::Translate { bone }, bone),
             _ => {
                 // FK aim: the bone's tail follows the cursor.
                 let child = m.skeleton.bones[bone].children.first().copied();
@@ -371,6 +377,7 @@ impl PoserApp {
         };
         let eff_world = c.world.transform_point3(c.pose.world.get(effector)?.w_axis.truncate());
         let follow_cursor = matches!(kind, IkKind::Aim { .. } | IkKind::Swing { .. });
+        let follow_cursor = follow_cursor && !matches!(kind, IkKind::Translate { .. });
         let grab_offset = if follow_cursor { Vec3::ZERO } else { eff_world - grab };
         let plane_point = if follow_cursor { grab } else { eff_world };
         Some(Drag::Ik { figure: f, kind, effector, grab_offset, plane_point })
@@ -442,6 +449,16 @@ impl PoserApp {
                 };
                 self.scene.figures[figure].transform.translation = target + grab_offset;
                 self.needs_render = true;
+            }
+            Drag::Orbit { last, pan } => {
+                let d = p - last;
+                if pan {
+                    self.cam.pan(d.x, d.y, view.size().y);
+                } else {
+                    self.cam.orbit(d.x * 0.0085, d.y * 0.0085);
+                }
+                self.cam_anim = None;
+                self.drag = Some(Drag::Orbit { last: p, pan });
             }
             Drag::RotateFigure { figure } => {
                 self.ensure_undo("Rotate figure");
@@ -532,6 +549,15 @@ impl PoserApp {
             IkKind::Aim { bone } => {
                 ik::aim_bone(sk, shapes.as_deref(), &mut fig.pose.locals, *bone, target);
                 self.clamp_bone(f, *bone);
+            }
+            IkKind::Translate { bone } => {
+                let w = sk.evaluate(&fig.pose.locals, shapes.as_deref()).world;
+                let pw = match sk.bones[*bone].parent {
+                    Some(p) => w[p],
+                    None => sk.root_transform,
+                };
+                let cur = w[*bone].w_axis.truncate();
+                fig.pose.locals[*bone].translation += pw.inverse().transform_vector3(target - cur);
             }
         }
         self.solve_pins(f, Some(effector));

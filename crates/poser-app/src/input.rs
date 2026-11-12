@@ -75,6 +75,10 @@ impl PoserApp {
             nav(self, resp.drag_delta(), mods.shift, mods.ctrl);
             consumed = true;
         }
+        if resp.dragged_by(PointerButton::Secondary) && self.modal.is_none() {
+            nav(self, resp.drag_delta(), mods.shift, mods.ctrl);
+            consumed = true;
+        }
         if self.opts.emulate_3button && mods.alt && resp.dragged_by(PointerButton::Primary) && self.drag.is_none() {
             nav(self, resp.drag_delta(), mods.shift, mods.ctrl);
             consumed = true;
@@ -84,8 +88,14 @@ impl PoserApp {
             for e in events {
                 match e {
                     egui::Event::MouseWheel { unit, delta, modifiers, .. } => {
+                        let unit = match self.opts.scroll {
+                            crate::app::ScrollMode::AlwaysZoom => MouseWheelUnit::Line,
+                            crate::app::ScrollMode::AlwaysOrbit => MouseWheelUnit::Point,
+                            crate::app::ScrollMode::Auto => unit,
+                        };
+                        let delta = if self.opts.scroll == crate::app::ScrollMode::AlwaysZoom && unit == MouseWheelUnit::Line && delta.y.abs() > 3.0 { delta / 50.0 } else { delta };
                         match unit {
-                            MouseWheelUnit::Point if self.opts.touchpad_orbit && !modifiers.ctrl => {
+                            MouseWheelUnit::Point if !modifiers.ctrl => {
                                 // Precision touchpad two-finger scroll: orbit (Shift = pan).
                                 if modifiers.shift {
                                     self.cam.pan(-delta.x, -delta.y, view.size().y);
@@ -498,6 +508,13 @@ impl PoserApp {
                     fig.pose.locals[end].rotation = (pr.inverse() * r).normalize();
                 }
             }
+        } else if self.opts.mode == crate::app::PoseMode::Free {
+            let fig = &mut self.scene.figures[figure];
+            let pw = match model.skeleton.bones[bone].parent {
+                Some(p) => w[p],
+                None => model.skeleton.root_transform,
+            };
+            fig.pose.locals[bone].translation += pw.inverse().transform_vector3(d_model);
         } else {
             let fig = &mut self.scene.figures[figure];
             if let Some(p) = model.skeleton.bones[bone].parent {

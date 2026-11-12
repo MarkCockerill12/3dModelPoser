@@ -35,6 +35,7 @@ pub fn apply(ctx: &egui::Context) {
     v.window_corner_radius = CornerRadius::same(6);
     ctx.set_visuals(v);
     ctx.global_style_mut(|s| {
+        s.wrap_mode = Some(egui::TextWrapMode::Truncate);
         s.spacing.item_spacing = egui::vec2(6.0, 4.0);
         s.spacing.slider_width = 150.0;
         s.spacing.interact_size.y = 20.0;

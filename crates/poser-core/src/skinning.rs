@@ -1,6 +1,20 @@
 //! CPU morph + linear blend skinning. Results feed both the renderer and picking.
 use crate::model::Mesh;
-use glam::{Mat3, Mat4, Vec3};
+use glam::{Mat3, Mat4, Quat, Vec3, Vec4};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Dual-quaternion skinning (volume preserving) on/off.
+pub static DUAL_QUATERNION: AtomicBool = AtomicBool::new(true);
+
+/// Rigid joint as a dual quaternion (real, dual). None when the matrix has scale.
+fn to_dq(m: &Mat4) -> Option<(Quat, Quat)> {
+    let (s, r, t) = m.to_scale_rotation_translation();
+    if (s - Vec3::ONE).abs().max_element() > 1e-3 {
+        return None;
+    }
+    let d = Quat::from_xyzw(t.x, t.y, t.z, 0.0) * r * 0.5;
+    Some((r, d))
+}
 use rayon::prelude::*;
 
 /// Deformed vertex data for one mesh.
@@ -43,6 +57,7 @@ pub fn deform(mesh: &Mesh, morph_weights: &[f32], skin: &[Mat4], rigid: Mat4, ou
     }
     if mesh.is_skinned() && !skin.is_empty() {
         let nmats: Vec<Mat3> = skin.iter().map(|m| Mat3::from_mat4(*m).inverse().transpose()).collect();
+        let dqs: Vec<Option<(Quat, Quat)>> = if DUAL_QUATERNION.load(Ordering::Relaxed) { skin.iter().map(to_dq).collect() } else { vec![None; skin.len()] };
         let joints = &mesh.joints;
         let weights = &mesh.weights;
         let nj = skin.len();
@@ -54,6 +69,38 @@ pub fn deform(mesh: &Mesh, morph_weights: &[f32], skin: &[Mat4], rigid: Mat4, ou
             .for_each(|(i, (p, nr))| {
                 let j = joints[i];
                 let w = weights[i];
+                // Dual quaternion blend when every influence is rigid.
+                let all_rigid = (0..4).all(|k| w[k] <= 0.0 || dqs.get(j[k] as usize).is_some_and(|d| d.is_some()));
+                if all_rigid {
+                    let mut real = Vec4::ZERO;
+                    let mut dual = Vec4::ZERO;
+                    let mut pivot: Option<Quat> = None;
+                    for k in 0..4 {
+                        if w[k] <= 0.0 {
+                            continue;
+                        }
+                        let (r, d) = dqs[j[k] as usize].unwrap();
+                        let s = match pivot {
+                            Some(p0) if p0.dot(r) < 0.0 => -w[k],
+                            None => {
+                                pivot = Some(r);
+                                w[k]
+                            }
+                            _ => w[k],
+                        };
+                        real += Vec4::from(r) * s;
+                        dual += Vec4::from(d) * s;
+                    }
+                    let len = real.length();
+                    if len > 1e-8 {
+                        let r = Quat::from_vec4(real / len);
+                        let d = Quat::from_vec4(dual / len);
+                        let t = (d * 2.0) * r.conjugate();
+                        *p = r * *p + Vec3::new(t.x, t.y, t.z);
+                        *nr = (r * *nr).normalize_or(Vec3::Y);
+                        return;
+                    }
+                }
                 let mut acc = Vec3::ZERO;
                 let mut accn = Vec3::ZERO;
                 for k in 0..4 {

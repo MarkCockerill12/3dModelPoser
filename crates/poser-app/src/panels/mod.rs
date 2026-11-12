@@ -12,6 +12,7 @@ pub fn top_bar(app: &mut PoserApp, ui: &mut egui::Ui) {
     Panel::top("menu").show(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
+                ui.set_min_width(260.0);
                 if ui.button("New scene  (Ctrl+N)").clicked() {
                     app.new_scene();
                     ui.close();
@@ -29,7 +30,17 @@ pub fn top_bar(app: &mut PoserApp, ui: &mut egui::Ui) {
                     app.import_dialog();
                     ui.close();
                 }
-                ui.menu_button("Add mannequin", |ui| {
+                ui.menu_button("Add human", |ui| {
+                    for (name, p) in poser_core::makehuman::HumanParams::presets() {
+                        if ui.button(name).clicked() {
+                            app.push_undo("Add human");
+                            let i = app.add_human(p, name);
+                            app.sel = crate::app::Selection { figure: Some(i), bone: None };
+                            ui.close();
+                        }
+                    }
+                });
+                ui.menu_button("Add wooden mannequin", |ui| {
                     for (name, p) in MannequinParams::presets() {
                         if ui.button(name).clicked() {
                             app.push_undo("Add mannequin");
@@ -172,7 +183,7 @@ pub fn status_bar(app: &mut PoserApp, ui: &mut egui::Ui) {
 }
 
 pub fn toolbar(app: &mut PoserApp, ui: &mut egui::Ui) {
-    Panel::left("toolbar").exact_size(56.0).show(ui, |ui| {
+    Panel::left("toolbar").exact_size(70.0).show(ui, |ui| {
         ui.vertical_centered(|ui| {
             ui.add_space(6.0);
             for (t, icon, tip) in [(Tool::Pose, "Pose", "Pose (rings + IK drag)"), (Tool::Move, "Move", "Move figure"), (Tool::Rotate, "Turn", "Turn figure")] {

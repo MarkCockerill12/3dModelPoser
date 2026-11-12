@@ -23,17 +23,25 @@ pub fn right_panel(app: &mut PoserApp, ui: &mut egui::Ui) {
     Panel::right("sidebar").resizable(true).default_size(330.0).min_size(260.0).show(ui, |ui| {
         outliner(app, ui, &mut edited);
         ui.separator();
-        ui.horizontal_wrapped(|ui| {
-            for (t, l) in [
-                (PropsTab::Rig, "Rig"),
-                (PropsTab::Pose, "Pose"),
-                (PropsTab::Hands, "Hands"),
-                (PropsTab::Body, "Body"),
-                (PropsTab::Library, "Library"),
-                (PropsTab::Camera, "Camera"),
-                (PropsTab::Render, "Render"),
-            ] {
-                ui.selectable_value(&mut app.props_tab, t, l);
+        let tabs = [
+            (PropsTab::Pose, "Pose"),
+            (PropsTab::Hands, "Hands"),
+            (PropsTab::Body, "Body"),
+            (PropsTab::Library, "Library"),
+            (PropsTab::Camera, "Camera"),
+            (PropsTab::Render, "Render"),
+            (PropsTab::Rig, "Rig"),
+        ];
+        let w = (ui.available_width() - 3.0 * 4.0) / 4.0;
+        egui::Grid::new("tabs").num_columns(4).spacing([4.0, 4.0]).show(ui, |ui| {
+            for (i, (t, l)) in tabs.iter().enumerate() {
+                let sel = app.props_tab == *t;
+                if ui.add_sized([w, 22.0], egui::Button::selectable(sel, *l)).clicked() {
+                    app.props_tab = *t;
+                }
+                if i % 4 == 3 {
+                    ui.end_row();
+                }
             }
         });
         ui.separator();
@@ -67,11 +75,11 @@ fn outliner(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
             if ui.small_button("+ Import").clicked() {
                 app.import_dialog();
             }
-            ui.menu_button("+ Mannequin", |ui| {
-                for (name, p) in MannequinParams::presets() {
+            ui.menu_button("+ Human", |ui| {
+                for (name, p) in poser_core::makehuman::HumanParams::presets() {
                     if ui.button(name).clicked() {
-                        app.push_undo("Add mannequin");
-                        let i = app.add_mannequin(p, name);
+                        app.push_undo("Add human");
+                        let i = app.add_human(p, name);
                         app.sel = Selection { figure: Some(i), bone: None };
                         ui.close();
                     }
@@ -83,8 +91,7 @@ fn outliner(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
         let mut select = None;
         for (i, f) in app.scene.figures.iter_mut().enumerate() {
             ui.horizontal(|ui| {
-                if ui.small_button(if f.visible { "o" } else { "-" }).clicked() {
-                    f.visible = !f.visible;
+                if ui.checkbox(&mut f.visible, "").on_hover_text("Visible").changed() {
                     *edited = true;
                 }
                 let icon = if f.is_character() { if f.model.humanoid.is_valid() { "[H]" } else { "[R]" } } else { "[M]" };
@@ -199,7 +206,23 @@ fn rig_tab(app: &mut PoserApp, ui: &mut egui::Ui) {
 }
 
 
+fn mode_switch(app: &mut PoserApp, ui: &mut egui::Ui) {
+    use crate::app::PoseMode;
+    ui.horizontal(|ui| {
+        ui.label("Posing");
+        let w = (ui.available_width() - 6.0) / 2.0;
+        if ui.add_sized([w, 22.0], egui::Button::selectable(app.opts.mode == PoseMode::Guided, "Guided")).on_hover_text("Joints stay within natural human ranges, so poses always look plausible").clicked() {
+            app.opts.mode = PoseMode::Guided;
+        }
+        if ui.add_sized([w, 22.0], egui::Button::selectable(app.opts.mode == PoseMode::Free, "Free")).on_hover_text("No limits: rotate any joint any amount; Ctrl+drag or G moves bones freely").clicked() {
+            app.opts.mode = PoseMode::Free;
+        }
+    });
+}
+
 fn pose_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
+    mode_switch(app, ui);
+    ui.separator();
     let Some(f) = app.sel.figure.filter(|f| *f < app.scene.figures.len()) else {
         ui.label("Select a figure in the viewport or the list above.");
         return;
@@ -228,7 +251,7 @@ fn pose_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
         let n = if use_norm { m.humanoid.to_normalized(&m.skeleton, b, q) } else { q };
         let (z, y, x) = n.to_euler(EulerRot::ZYX);
         let mut e = [x.to_degrees(), y.to_degrees(), z.to_degrees()];
-        let lim = if app.opts.limits { hb.and_then(|h| h.default_limit()) } else { None };
+        let lim = if app.opts.limits && app.opts.mode == crate::app::PoseMode::Guided { hb.and_then(|h| h.default_limit()) } else { None };
         let mut changed = false;
         for (i, (label, col)) in [("X", crate::theme::AXIS_X), ("Y", crate::theme::AXIS_Y), ("Z", crate::theme::AXIS_Z)].iter().enumerate() {
             let range = match (lim, i) {
@@ -315,7 +338,7 @@ fn pose_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
     });
     ui.separator();
     ui.label(RichText::new("Posing options").strong());
-    ui.checkbox(&mut app.opts.limits, "Joint limits (anatomical ranges)");
+    ui.add_enabled(app.opts.mode == crate::app::PoseMode::Guided, egui::Checkbox::new(&mut app.opts.limits, "Joint limits (Guided mode)"));
     ui.checkbox(&mut app.opts.local_axes, "Rings follow the bone (local axes)");
     ui.checkbox(&mut app.opts.show_rings, "Show rotation rings");
     ui.checkbox(&mut app.opts.keep_feet_planted, "Keep feet planted when moving hips");
@@ -416,6 +439,62 @@ fn body_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
         return;
     };
     let id = app.scene.figures[f].id;
+    if let Some(mut p) = app.humans.get(&id).cloned() {
+        use poser_core::makehuman::{HumanParams, age_to_years, years_to_age};
+        ui.label(RichText::new("Body").strong());
+        let mut ch = false;
+        egui::ComboBox::from_id_salt("humanpreset").width(ui.available_width()).selected_text("Body type presets...").show_ui(ui, |ui| {
+            for (name, preset) in HumanParams::presets() {
+                if ui.selectable_label(false, name).clicked() {
+                    p = preset;
+                    ch = true;
+                }
+            }
+        });
+        let mut gender = p.gender;
+        ch |= ui.add(Slider::new(&mut gender, 0.0..=1.0).text("Female - male")).changed();
+        p.gender = gender;
+        let mut years = age_to_years(p.age);
+        if ui.add(Slider::new(&mut years, 1.0..=90.0).text("Age (years)").fixed_decimals(0)).changed() {
+            p.age = years_to_age(years);
+            ch = true;
+        }
+        ch |= ui.add(Slider::new(&mut p.muscle, 0.0..=1.0).text("Muscle")).changed();
+        ch |= ui.add(Slider::new(&mut p.weight, 0.0..=1.0).text("Weight")).changed();
+        let mut cm = p.height * 100.0;
+        if ui.add(Slider::new(&mut cm, 50.0..=230.0).text("Height (cm)").fixed_decimals(0)).changed() {
+            p.height = cm / 100.0;
+            ch = true;
+        }
+        if p.gender < 0.95 {
+            ch |= ui.add(Slider::new(&mut p.breast_size, 0.0..=1.0).text("Breast size")).changed();
+            ch |= ui.add(Slider::new(&mut p.breast_firmness, 0.0..=1.0).text("Breast firmness")).changed();
+        }
+        egui::CollapsingHeader::new("Ethnicity").id_salt("eth").show(ui, |ui| {
+            ch |= ui.add(Slider::new(&mut p.african, 0.0..=1.0).text("African")).changed();
+            ch |= ui.add(Slider::new(&mut p.asian, 0.0..=1.0).text("Asian")).changed();
+            ch |= ui.add(Slider::new(&mut p.caucasian, 0.0..=1.0).text("Caucasian")).changed();
+        });
+        egui::CollapsingHeader::new("Stylised proportions").id_salt("style").default_open(true).show(ui, |ui| {
+            for (label, v, r) in [
+                ("Head size", &mut p.head_size, 0.6..=2.0),
+                ("Neck length", &mut p.neck_length, 0.4..=2.0),
+                ("Torso length", &mut p.torso_length, 0.7..=1.4),
+                ("Shoulder width", &mut p.shoulder_width, 0.6..=1.6),
+                ("Arm length", &mut p.arm_length, 0.7..=1.4),
+                ("Leg length", &mut p.leg_length, 0.7..=1.4),
+                ("Hand size", &mut p.hand_size, 0.6..=1.6),
+                ("Foot size", &mut p.foot_size, 0.6..=1.6),
+            ] {
+                ch |= ui.add(Slider::new(v, r).text(label)).changed();
+            }
+        });
+        if ch {
+            app.rebuild_human(f, p);
+            *edited = true;
+        }
+        ui.separator();
+    }
     if let Some(mut p) = app.mannequins.get(&id).cloned() {
         ui.label(RichText::new("Mannequin proportions").strong());
         egui::ComboBox::from_label("Preset").selected_text("Choose body type...").show_ui(ui, |ui| {
@@ -693,8 +772,19 @@ fn camera_tab(app: &mut PoserApp, ui: &mut egui::Ui) {
     }
     ui.separator();
     ui.label(RichText::new("Navigation").strong());
+    use crate::app::ScrollMode;
+    egui::ComboBox::from_label("Scroll / two-finger").selected_text(match app.opts.scroll {
+        ScrollMode::Auto => "Auto (wheel zooms, touchpad orbits)",
+        ScrollMode::AlwaysZoom => "Always zoom",
+        ScrollMode::AlwaysOrbit => "Always orbit",
+    }).show_ui(ui, |ui| {
+        ui.selectable_value(&mut app.opts.scroll, ScrollMode::Auto, "Auto (wheel zooms, touchpad orbits)");
+        ui.selectable_value(&mut app.opts.scroll, ScrollMode::AlwaysZoom, "Always zoom");
+        ui.selectable_value(&mut app.opts.scroll, ScrollMode::AlwaysOrbit, "Always orbit");
+    });
     ui.checkbox(&mut app.opts.emulate_3button, "Alt + left drag navigates (no middle button)");
-    ui.checkbox(&mut app.opts.touchpad_orbit, "Touchpad two-finger scroll orbits");
+    ui.checkbox(&mut app.opts.drag_empty_orbits, "Left-drag empty space orbits (Shift: pan)");
+    ui.label(RichText::new("Right-drag also orbits (Shift pan, Ctrl zoom). Pinch zooms.").weak());
 }
 
 fn render_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
@@ -727,6 +817,12 @@ fn render_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
     ui.add(Slider::new(&mut s.ambient, 0.0..=1.5).text("ambient"));
     ui.add(Slider::new(&mut s.rim, 0.0..=1.0).text("rim light"));
     ui.checkbox(&mut s.shadows, "Shadows");
+    if ui.checkbox(&mut app.opts.dual_quaternion, "Volume-preserving skinning").on_hover_text("Dual-quaternion skinning keeps elbows, shoulders and wrists from collapsing at extreme angles").changed() {
+        poser_core::skinning::DUAL_QUATERNION.store(app.opts.dual_quaternion, std::sync::atomic::Ordering::Relaxed);
+        for f in &mut app.scene.figures {
+            f.touch();
+        }
+    }
     ui.horizontal(|ui| {
         ui.checkbox(&mut s.outline, "Outline");
         ui.add(Slider::new(&mut s.outline_width, 0.5..=6.0).text("width"));
