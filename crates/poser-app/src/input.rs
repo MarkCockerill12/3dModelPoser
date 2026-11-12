@@ -181,7 +181,7 @@ impl PoserApp {
                 Key::F if !ctrl => self.frame_selected(),
                 Key::N if !ctrl => self.show_right = !self.show_right,
                 Key::T if !ctrl => self.show_left = !self.show_left,
-                Key::Delete | Key::X if !ctrl && !alt => self.delete_selected(),
+                Key::Delete | Key::X if !ctrl && !alt && self.armature.is_none() => self.delete_selected(),
                 Key::D if shift => self.duplicate_selected(),
                 Key::P if !ctrl => {
                     if let (Some(f), Some(b)) = (self.sel.figure, self.sel.bone) {
@@ -234,7 +234,7 @@ impl PoserApp {
                         }
                     }
                 }
-                Key::G | Key::R | Key::S if !ctrl => {
+                Key::G | Key::R | Key::S if !ctrl && self.armature.is_none() && self.rig.is_none() => {
                     if let (Some(f), Some(p)) = (self.sel.figure, pointer) {
                         let kind = match k {
                             Key::G => ModalKind::Grab,

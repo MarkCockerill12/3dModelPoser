@@ -244,6 +244,12 @@ impl PoserApp {
         });
         self.ctrl_down = mods.ctrl;
         let alt_nav = self.opts.emulate_3button && mods.alt;
+        if self.armature.is_some() {
+            if resp.contains_pointer() || self.armature.as_ref().is_some_and(|a| a.drag.is_some()) {
+                self.armature_pointer(ui, view, pointer.or(latest));
+            }
+            return;
+        }
         if self.rig.is_some() {
             self.rig_pointer(view, pointer, latest, pressed && !alt_nav && resp.contains_pointer(), down, released);
             return;
@@ -792,6 +798,7 @@ impl PoserApp {
             }
         }
         self.draw_rig_markers(&painter, view);
+        self.draw_armature(&painter, view);
         // Navigation gizmo + view label
         gizmo::axis_widget(&painter, self.axis_widget_center(view.rect), &self.cam);
         let proj = match self.cam.projection {

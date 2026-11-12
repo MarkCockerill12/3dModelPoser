@@ -564,7 +564,13 @@ pub fn heat_weights(positions: &[Vec3], normals: &[Vec3], tris: &[[u32; 3]], ske
 /// Rig an unrigged (or re-rig any) model as a humanoid. Returns a new model.
 pub fn auto_rig(model: &Model, markers: &Markers) -> Result<Model> {
     let pts = sample_points(model, 200_000);
-    let (skel, mut map) = skeleton_from_markers_with_hands(markers, Some(&pts));
+    let (skel, map) = skeleton_from_markers_with_hands(markers, Some(&pts));
+    bind_skeleton(model, skel, map)
+}
+
+/// Bind any skeleton (rest = identity rotations at joint positions) to a model with bone-heat
+/// weights. Bones named *Tip / HeadTop are treated as non-deforming end markers.
+pub fn bind_skeleton(model: &Model, skel: Skeleton, mut map: HumanoidMap) -> Result<Model> {
     let mut out = model.clone();
     // Bring every mesh into model space at rest (drops any previous rig).
     let rest = model.rest_positions();
@@ -599,7 +605,6 @@ pub fn auto_rig(model: &Model, markers: &Markers) -> Result<Model> {
         }
     }
     let deform: Vec<bool> = skel.bones.iter().map(|b| !b.name.contains("Tip") && !b.name.contains("HeadTop")).collect();
-    let _ = &pts;
     let mut skel = skel;
     let prefer: Vec<Option<usize>> = (0..skel.len()).map(|i| map.human_of(i).and_then(|h| h.tail_child()).and_then(|t| map.get(t))).collect();
     skel.compute_axes(|i| prefer[i]);
@@ -625,7 +630,11 @@ pub fn auto_rig(model: &Model, markers: &Markers) -> Result<Model> {
         m.morphs.clear();
         m.linear_blend = true;
     }
-    map.compute_tpose(&skel);
+    if map.is_valid() {
+        map.compute_tpose(&skel);
+    } else {
+        map = HumanoidMap::default();
+    }
     out.skeleton = skel;
     out.humanoid = map;
     out.animations.clear();

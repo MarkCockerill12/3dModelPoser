@@ -140,6 +140,10 @@ fn outliner(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
 }
 
 fn rig_tab(app: &mut PoserApp, ui: &mut egui::Ui) {
+    if app.armature.is_some() {
+        app.armature_panel(ui);
+        return;
+    }
     if let Some(r) = app.rig.as_mut() {
         ui.label(RichText::new("Auto-rig: place the markers").strong());
         ui.label("Drag each coloured dot onto the matching spot. Check the front (1) and side (3) views: markers should sit inside the body at the joint centres.");
@@ -200,8 +204,14 @@ fn rig_tab(app: &mut PoserApp, ui: &mut egui::Ui) {
         start = ui.button(RichText::new("Auto-rig as humanoid").strong()).clicked();
         ui.label(RichText::new("Props (swords, chairs...) do not need rigging: use Move/Turn to place them.").weak());
     }
+    ui.separator();
+    ui.label(RichText::new("Manual rigging").strong());
+    ui.label(RichText::new("Build or fix the skeleton yourself (animals, creatures, props, odd proportions).").weak());
+    let manual = ui.button("Edit skeleton manually...").clicked();
     if start {
         app.start_rig(f);
+    } else if manual {
+        app.start_armature_edit(f);
     }
 }
 

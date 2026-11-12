@@ -219,6 +219,7 @@ pub struct PoserApp {
     /// Picture-in-picture camera (None = off).
     pub inset: Option<Camera>,
     pub inset_tex: Option<egui::TextureId>,
+    pub armature: Option<crate::armature::ArmatureEdit>,
 }
 
 impl PoserApp {
@@ -291,6 +292,7 @@ impl PoserApp {
             thumbs: Default::default(),
             inset: None,
             inset_tex: None,
+            armature: None,
         };
         let idx = app.add_human(HumanParams::default(), "Human");
         app.sel = Selection { figure: Some(idx), bone: None };
@@ -1223,6 +1225,10 @@ impl eframe::App for PoserApp {
         self.poll_imports(&ctx);
         self.poll_retargets(&ctx);
         self.poll_rig();
+        self.poll_armature();
+        if self.armature.as_ref().is_some_and(|a| a.computing.is_some()) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
         if self.rig.as_ref().is_some_and(|r| r.computing.is_some()) {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
