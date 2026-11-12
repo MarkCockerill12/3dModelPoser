@@ -360,6 +360,8 @@ pub fn windows(app: &mut PoserApp, ctx: &egui::Context) {
                     ("Middle mouse drag", "Orbit (Shift: pan, Ctrl: zoom)"),
                     ("Mouse wheel", "Zoom"),
                     ("Alt + left drag", "Orbit without a middle button (Shift pan, Ctrl zoom)"),
+                    ("Right drag", "Orbit (Shift pan, Ctrl zoom)"),
+                    ("Left drag empty space", "Orbit (Shift pan)"),
                     ("Touchpad 2-finger", "Orbit (Shift: pan), pinch to zoom"),
                     ("1 / 3 / 7", "Front / right / top view (Ctrl: opposite)"),
                     ("2 4 6 8", "Orbit 15° (Ctrl: pan, Shift+4/6: roll)"),
@@ -380,7 +382,9 @@ pub fn windows(app: &mut PoserApp, ctx: &egui::Context) {
                     ("Shift+D / X", "Duplicate / delete figure"),
                     ("H / Alt+H", "Hide / unhide"),
                     ("N / T", "Toggle sidebar / toolbar"),
-                    ("Drop files", "Import GLB, GLTF, VRM, FBX, OBJ"),
+                    ("Ctrl + drag (Free mode)", "Move a bone instead of rotating it"),
+                    ("Skeleton edit", "E extrude, Ctrl+click add bone, X delete"),
+                    ("Drop files", "Import GLB, GLTF, VRM, FBX, OBJ, PMX, PMD"),
                 ] {
                     ui.label(RichText::new(k).strong());
                     ui.label(v);
