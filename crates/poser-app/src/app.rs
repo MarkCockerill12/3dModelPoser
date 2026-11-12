@@ -711,6 +711,21 @@ impl PoserApp {
         fig.pose.locals[bone].rotation = m.humanoid.to_local(&m.skeleton, bone, c);
     }
 
+    /// How far (radians) a bone is outside its Guided joint limits (0 when inside / Free mode).
+    pub fn limit_violation(&self, idx: usize, bone: usize) -> f32 {
+        if !self.opts.limits || self.opts.mode == PoseMode::Free {
+            return 0.0;
+        }
+        let Some(lim) = self.limit_for(idx, bone) else { return 0.0 };
+        let fig = &self.scene.figures[idx];
+        let m = &fig.model;
+        if m.humanoid.tpose_world.len() != m.skeleton.len() {
+            return 0.0;
+        }
+        let n = m.humanoid.to_normalized(&m.skeleton, bone, fig.pose.locals[bone].rotation);
+        n.angle_between(lim.clamp(n))
+    }
+
     pub fn toggle_pin(&mut self, idx: usize, bone: usize) {
         let id = self.scene.figures[idx].id;
         if self.pins.remove(&(id, bone)).is_none() {
@@ -753,7 +768,7 @@ impl PoserApp {
         Some((m.humanoid.get(r)?, m.humanoid.get(mid)?, end, hint))
     }
 
-    fn guided(&self) -> bool {
+    pub fn guided(&self) -> bool {
         self.opts.mode == PoseMode::Guided && self.opts.limits
     }
 

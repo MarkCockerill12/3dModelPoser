@@ -222,6 +222,10 @@ impl PoserApp {
         let center = c.world.transform_point3(bw.w_axis.truncate());
         let rot = fig.transform.rotation * mat_rotation(&bw);
         let mut rs = RingSet::for_bone(center, rot, fig.model.skeleton.bones[b].axis, self.opts.local_axes, view);
+        if let Some(ax) = self.anatomical_axes(f, b) {
+            let fr = fig.transform.rotation;
+            rs.axes = ax.map(|a| (fr * a).normalize());
+        }
         if let Some((root, mid, end)) = self.swing_chain_for(f, b) {
             let wp = |i: usize| c.world.transform_point3(c.pose.world[i].w_axis.truncate());
             let (a, m, e) = (wp(root), wp(mid), wp(end));
@@ -233,6 +237,30 @@ impl PoserApp {
             }
         }
         Some(rs)
+    }
+
+    /// Guided mode: the joint's own anatomical axes (model space) in X/Y/Z order. The twist axis
+    /// runs along the bone; the other two are the bend axes the joint limits are defined on, so
+    /// e.g. one elbow ring is the hinge, one the forearm twist, and the third is locked.
+    pub fn anatomical_axes(&self, f: usize, b: usize) -> Option<[Vec3; 3]> {
+        if !self.guided() {
+            return None;
+        }
+        let lim = self.limit_for(f, b)?;
+        let fig = self.scene.figures.get(f)?;
+        let m = &fig.model;
+        let hm = &m.humanoid;
+        if hm.tpose_world.len() != m.skeleton.len() {
+            return None;
+        }
+        let c = self.cache.figs.get(&fig.id)?;
+        let nb = mat_rotation(c.pose.world.get(b)?) * hm.tpose_world[b].inverse();
+        let np = match m.skeleton.bones[b].parent {
+            Some(p) => mat_rotation(&c.pose.world[p]) * hm.tpose_world[p].inverse(),
+            None => Quat::IDENTITY,
+        };
+        let e = [Vec3::X, Vec3::Y, Vec3::Z];
+        Some(std::array::from_fn(|i| if i == lim.twist as usize { nb * e[i] } else { np * e[i] }.normalize()))
     }
 
     /// (root, mid, end) of the arm/leg containing `b` (for the swing donut).
@@ -535,6 +563,34 @@ impl PoserApp {
             (H::Chest, Vec3::new(0.3, -0.2, 0.3)),
             (H::Hips, Vec3::new(0.0, -0.4, 0.0)),
         ];
+        // Ring rotation check: each axis step must rotate the bone about that axis only.
+        for hb in [H::LeftUpperArm, H::LeftLowerArm, H::LeftUpperLeg, H::Chest, H::Neck] {
+            let Some(b) = self.scene.figures[f].model.humanoid.get(hb) else { continue };
+            for ring in 0..3 {
+                self.scene.figures[f].pose.locals = base.clone();
+                // Start from a bent pose so local axes are not aligned with the T-pose.
+                if let Some(ua) = self.scene.figures[f].model.humanoid.get(H::LeftUpperArm) {
+                    let q = self.scene.figures[f].pose.locals[ua].rotation;
+                    self.scene.figures[f].pose.locals[ua].rotation = q * Quat::from_rotation_z(0.6) * Quat::from_rotation_x(0.4);
+                }
+                let sk = self.scene.figures[f].model.skeleton.clone();
+                let w0 = sk.evaluate(&self.scene.figures[f].pose.locals, None).world;
+                let r0 = mat_rotation(&w0[b]);
+                self.scene.figures[f].touch();
+                self.cache.update(&self.scene, None, None);
+                let Some(axes) = self.anatomical_axes(f, b) else { continue };
+                let ax = axes[ring];
+                let mut total = 0.0;
+                for _ in 0..40 {
+                    self.rotate_on_axis(f, &[b], ax, 0.03);
+                    total += 0.03;
+                }
+                let w1 = sk.evaluate(&self.scene.figures[f].pose.locals, None).world;
+                let (d_axis, d_ang) = (mat_rotation(&w1[b]) * r0.inverse()).to_axis_angle();
+                let off = if d_ang > 1e-3 { d_axis.angle_between(ax).min(d_axis.angle_between(-ax)).to_degrees() } else { 0.0 };
+                println!("ring {hb:?} axis {ring}: turned {:.1} of {:.1} deg, off-axis {:.2} deg", d_ang.to_degrees(), (total as f32).to_degrees(), off);
+            }
+        }
         let mut out = vec![];
         for (hb, off) in tests {
             self.scene.figures[f].pose.locals = base.clone();
@@ -555,6 +611,39 @@ impl PoserApp {
         self.scene.figures[f].pose.locals = base;
         self.scene.figures[f].touch();
         out
+    }
+
+    /// Rotate `bones` (split evenly) about one model-space axis, and nothing else: in Guided mode
+    /// the rotation stops at the joint limit instead of being clamped sideways onto other axes.
+    pub(crate) fn rotate_on_axis(&mut self, f: usize, bones: &[usize], axis: Vec3, phi: f32) {
+        let model = self.scene.figures[f].model.clone();
+        let sk = &model.skeleton;
+        let before: Vec<_> = bones.iter().map(|b| self.scene.figures[f].pose.locals[*b]).collect();
+        let worst = |app: &Self| bones.iter().map(|b| app.limit_violation(f, *b)).fold(0.0f32, f32::max);
+        let v0 = worst(self);
+        let apply = |app: &mut Self, t: f32| {
+            let fig = &mut app.scene.figures[f];
+            for (b, l) in bones.iter().zip(&before) {
+                fig.pose.locals[*b] = *l;
+            }
+            let step = Quat::from_axis_angle(axis, phi * t / bones.len() as f32);
+            for b in bones.iter().rev() {
+                let w = sk.evaluate(&fig.pose.locals, fig.shapes_opt()).world;
+                ik::rotate_bone_world(sk, &w, &mut fig.pose.locals, *b, step);
+            }
+        };
+        apply(self, 1.0);
+        if worst(self) <= v0 + 1e-3 {
+            return;
+        }
+        // Find how far along this axis we can go before leaving the limits.
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        for _ in 0..10 {
+            let mid = (lo + hi) * 0.5;
+            apply(self, mid);
+            if worst(self) <= v0 + 1e-3 { lo = mid } else { hi = mid }
+        }
+        apply(self, lo);
     }
 
     fn ensure_undo(&mut self, label: &str) {
@@ -682,31 +771,15 @@ impl PoserApp {
                 } else if phi.abs() > 1e-6 && self.opts.spine_spread && self.spine_chain(f, b).len() > 1 {
                     self.ensure_undo("Bend spine");
                     let chain = self.spine_chain(f, b);
-                    let fig = &mut self.scene.figures[f];
-                    let fr = fig.transform.rotation;
-                    let ax = (fr.inverse() * axis_world).normalize();
-                    let model = fig.model.clone();
-                    let step = phi / chain.len() as f32;
-                    for bone in chain.iter().rev() {
-                        let w = model.skeleton.evaluate(&fig.pose.locals, fig.shapes_opt()).world;
-                        ik::rotate_bone_world(&model.skeleton, &w, &mut fig.pose.locals, *bone, Quat::from_axis_angle(ax, step));
-                    }
-                    for bone in chain {
-                        self.clamp_bone(f, bone);
-                    }
+                    let ax = (self.scene.figures[f].transform.rotation.inverse() * axis_world).normalize();
+                    self.rotate_on_axis(f, &chain, ax, phi);
                     self.solve_pins(f, Some(b));
                     self.scene.figures[f].touch();
                     self.stop_anim(f);
                 } else if phi.abs() > 1e-6 {
                     self.ensure_undo("Rotate bone");
-                    let fig = &mut self.scene.figures[f];
-                    let fr = fig.transform.rotation;
-                    let q_model = Quat::from_axis_angle((fr.inverse() * axis_world).normalize(), phi);
-                    let model = fig.model.clone();
-                    let w = model.skeleton.evaluate(&fig.pose.locals, fig.shapes_opt()).world;
-                    ik::rotate_bone_world(&model.skeleton, &w, &mut fig.pose.locals, b, q_model);
-                    self.clamp_bone(f, b);
-                    self.shoulder_rhythm(f);
+                    let ax = (self.scene.figures[f].transform.rotation.inverse() * axis_world).normalize();
+                    self.rotate_on_axis(f, &[b], ax, phi);
                     self.solve_pins(f, Some(b));
                     self.scene.figures[f].touch();
                     self.stop_anim(f);

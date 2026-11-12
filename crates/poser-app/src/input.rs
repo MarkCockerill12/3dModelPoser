@@ -420,12 +420,17 @@ impl PoserApp {
                 let q_world = Quat::from_axis_angle(axis, angle);
                 match m.bone {
                     Some(b) => {
-                        let fig = &mut self.scene.figures[m.figure];
-                        let model = fig.model.clone();
-                        let q_model = fig_rot.inverse() * q_world * fig_rot;
-                        let w = model.skeleton.evaluate(&fig.pose.locals, fig.shapes_opt()).world;
-                        ik::rotate_bone_world(&model.skeleton, &w, &mut fig.pose.locals, b, q_model);
-                        self.clamp_bone(m.figure, b);
+                        if m.trackball {
+                            let fig = &mut self.scene.figures[m.figure];
+                            let model = fig.model.clone();
+                            let q_model = fig_rot.inverse() * q_world * fig_rot;
+                            let w = model.skeleton.evaluate(&fig.pose.locals, fig.shapes_opt()).world;
+                            ik::rotate_bone_world(&model.skeleton, &w, &mut fig.pose.locals, b, q_model);
+                            self.clamp_bone(m.figure, b);
+                        } else {
+                            // Single axis: stays on that axis, stopping at the joint limit.
+                            self.rotate_on_axis(m.figure, &[b], (fig_rot.inverse() * axis).normalize(), angle);
+                        }
                         self.solve_pins(m.figure, Some(b));
                     }
                     None => {

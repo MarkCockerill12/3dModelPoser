@@ -174,7 +174,7 @@ impl HumanBone {
             b if b.is_finger() => {
                 let (_, f, _) = b.finger_info().unwrap();
                 if f == Finger::Thumb {
-                    Vec3::new(x * 0.7071, 0.0, 0.7071)
+                    Vec3::new(x * std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2)
                 } else {
                     Vec3::new(x, 0.0, 0.0)
                 }
