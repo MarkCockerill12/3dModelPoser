@@ -171,6 +171,7 @@ pub struct PoserApp {
     pub selftest: Option<(PathBuf, u32)>,
     pub rig: Option<RigSession>,
     pub sheet_model: Option<PathBuf>,
+    pub rig_markers: HashMap<u64, poser_rig::Markers>,
 }
 
 impl PoserApp {
@@ -230,6 +231,7 @@ impl PoserApp {
             selftest: None,
             rig: None,
             sheet_model: None,
+            rig_markers: HashMap::new(),
         };
         let idx = app.add_mannequin(MannequinParams::default(), "Mannequin");
         app.sel = Selection { figure: Some(idx), bone: None };
@@ -936,6 +938,7 @@ impl PoserApp {
         let Some(rx) = r.computing.as_ref() else { return };
         let Ok(res) = rx.try_recv() else { return };
         let id = r.figure_id;
+        let markers = r.markers;
         self.rig = None;
         self.cam.projection = Projection::Perspective;
         match (res, self.scene.index_of(id)) {
@@ -948,6 +951,7 @@ impl PoserApp {
                 f.morph_weights = vec![0.0; f.morph_names.len()];
                 f.model = model;
                 f.touch();
+                self.rig_markers.insert(id, markers);
                 self.props_tab = PropsTab::Pose;
                 self.status = "Rigged! Click a body part to pose it. Presets, IK and hands (no fingers yet) all work now.".into();
             }
@@ -955,6 +959,48 @@ impl PoserApp {
             _ => {}
         }
         self.needs_render = true;
+    }
+
+    /// Export posed figures as static meshes (GLB or OBJ).
+    pub fn export_model_dialog(&mut self, only_selected: bool) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("glTF binary (.glb)", &["glb"])
+            .add_filter("Wavefront OBJ (.obj)", &["obj"])
+            .set_file_name("pose.glb")
+            .set_title("Export posed model")
+            .save_file()
+        else {
+            return;
+        };
+        let sel = self.sel.figure.map(|f| (f, self.sel.bone));
+        self.cache.update(&self.scene, sel, self.hover);
+        let mut meshes = vec![];
+        for (fi, f) in self.scene.figures.iter().enumerate() {
+            if !f.visible || (only_selected && self.sel.figure != Some(fi)) {
+                continue;
+            }
+            let Some(c) = self.cache.figs.get(&f.id) else { continue };
+            let nm = poser_core::glam::Mat3::from_mat4(c.world).inverse().transpose();
+            for (mi, mesh) in f.model.meshes.iter().enumerate() {
+                let Some(d) = c.meshes.get(mi) else { continue };
+                let mat = &f.model.materials[mesh.material.min(f.model.materials.len() - 1)];
+                meshes.push(poser_io::export::ExportMesh {
+                    name: format!("{}_{}", f.name, mesh.name),
+                    positions: d.positions.iter().map(|p| c.world.transform_point3(*p)).collect(),
+                    normals: d.normals.iter().map(|n| (nm * *n).normalize_or(Vec3::Y)).collect(),
+                    uvs: &mesh.uvs,
+                    indices: &mesh.indices,
+                    material: mat,
+                    texture: mat.base_color_texture.and_then(|t| f.model.textures.get(t)),
+                });
+            }
+        }
+        let obj = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("obj"));
+        let r = if obj { poser_io::export::write_obj(&path, &meshes) } else { poser_io::export::write_glb(&path, &meshes) };
+        self.status = match r {
+            Ok(()) => format!("Exported {} mesh(es) to {}", meshes.len(), path.display()),
+            Err(e) => format!("Export failed: {e:#}"),
+        };
     }
 
     pub fn save_user_pose(&mut self, name: String) {

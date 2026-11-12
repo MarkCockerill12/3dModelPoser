@@ -12,6 +12,19 @@ pub fn top_bar(app: &mut PoserApp, ui: &mut egui::Ui) {
     Panel::top("menu").show(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
+                if ui.button("New scene  (Ctrl+N)").clicked() {
+                    app.new_scene();
+                    ui.close();
+                }
+                if ui.button("Open scene...  (Ctrl+O)").clicked() {
+                    app.open_scene_dialog();
+                    ui.close();
+                }
+                if ui.button("Save scene...  (Ctrl+S)").clicked() {
+                    app.save_scene_dialog();
+                    ui.close();
+                }
+                ui.separator();
                 if ui.button("Import model...  (Ctrl+I)").clicked() {
                     app.import_dialog();
                     ui.close();
@@ -27,6 +40,14 @@ pub fn top_bar(app: &mut PoserApp, ui: &mut egui::Ui) {
                     }
                 });
                 ui.separator();
+                if ui.button("Export posed model (GLB/OBJ)...").on_hover_text("Selected figure, baked in its current pose").clicked() {
+                    app.export_model_dialog(true);
+                    ui.close();
+                }
+                if ui.button("Export whole scene (GLB/OBJ)...").clicked() {
+                    app.export_model_dialog(false);
+                    ui.close();
+                }
                 if ui.button("Export image...  (Ctrl+Shift+S)").clicked() {
                     app.export.open = true;
                     ui.close();

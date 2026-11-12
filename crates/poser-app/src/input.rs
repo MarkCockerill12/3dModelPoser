@@ -32,6 +32,15 @@ impl PoserApp {
         if cmd(Key::I) {
             self.import_dialog();
         }
+        if cmd(Key::N) {
+            self.new_scene();
+        }
+        if cmd(Key::O) {
+            self.open_scene_dialog();
+        }
+        if cmd(Key::S) {
+            self.save_scene_dialog();
+        }
         if cmd_shift(Key::V) {
             self.paste_pose(true);
         } else if cmd(Key::V) {
