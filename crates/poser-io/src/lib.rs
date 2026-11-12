@@ -4,6 +4,7 @@ pub mod export_fbx;
 pub mod export_rigged;
 pub mod fbx_import;
 pub mod gltf_import;
+pub mod pmd_import;
 pub mod pmx_import;
 pub mod util;
 
@@ -20,7 +21,8 @@ pub fn load_model(path: &Path) -> Result<Model> {
     match ext.as_str() {
         "glb" | "gltf" | "vrm" => gltf_import::load(path),
         "fbx" | "obj" => fbx_import::load(path),
-        "pmx" | "pmd" => pmx_import::load(path),
+        "pmx" => pmx_import::load(path),
+        "pmd" => pmd_import::load(path),
         _ => bail!("unsupported file type: .{ext}"),
     }
 }
