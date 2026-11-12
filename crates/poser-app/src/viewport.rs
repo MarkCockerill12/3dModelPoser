@@ -104,12 +104,27 @@ impl PoserApp {
                 bounds_radius: radius,
             };
             let renderer = self.renderer.as_mut().unwrap();
+            renderer.use_slot(0);
             let view = renderer.render(&desc, &draws);
             if let Some(rs) = frame.wgpu_render_state() {
                 let mut r = rs.renderer.write();
                 match self.tex {
                     None => self.tex = Some(r.register_native_texture(&rs.device, view, wgpu::FilterMode::Linear)),
                     Some(id) => r.update_egui_texture_from_wgpu_texture(&rs.device, view, wgpu::FilterMode::Linear, id),
+                }
+            }
+            // Picture-in-picture camera.
+            if let (Some(icam), Some(rs)) = (self.inset, frame.wgpu_render_state()) {
+                let (iw, ih) = ((w as f32 * 0.3) as u32, (h as f32 * 0.3) as u32);
+                let draws = build_draws(&self.scene, &self.cache, false);
+                let idesc = poser_render::FrameDesc { camera: &icam, width: iw.max(16), height: ih.max(16), ..desc };
+                let renderer = self.renderer.as_mut().unwrap();
+                renderer.use_slot(1);
+                let v = renderer.render(&idesc, &draws);
+                let mut r = rs.renderer.write();
+                match self.inset_tex {
+                    None => self.inset_tex = Some(r.register_native_texture(&rs.device, v, wgpu::FilterMode::Linear)),
+                    Some(id) => r.update_egui_texture_from_wgpu_texture(&rs.device, v, wgpu::FilterMode::Linear, id),
                 }
             }
             for c in self.cache.figs.values_mut() {
@@ -133,6 +148,11 @@ impl PoserApp {
         }
         if let Some((id, rr, op, true)) = ref_rect {
             ui.painter().image(id, rr, uv, Color32::from_white_alpha((op * 255.0) as u8));
+        }
+        if let (Some(_), Some(t)) = (self.inset, self.inset_tex) {
+            let ir = Rect::from_min_size(rect.right_bottom() - egui::vec2(rect.width() * 0.3 + 12.0, rect.height() * 0.3 + 12.0), egui::vec2(rect.width() * 0.3, rect.height() * 0.3));
+            ui.painter().image(t, ir, uv, Color32::WHITE);
+            ui.painter().rect_stroke(ir, 3.0, Stroke::new(1.5, Color32::from_gray(200)), egui::StrokeKind::Outside);
         }
     }
 

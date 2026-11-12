@@ -799,6 +799,37 @@ fn camera_tab(app: &mut PoserApp, ui: &mut egui::Ui) {
         _ => {}
     }
     ui.separator();
+    ui.label(RichText::new("Second view (picture-in-picture)").strong());
+    let views: Vec<(String, Option<poser_core::camera::Camera>)> = {
+        let mut v: Vec<(String, Option<poser_core::camera::Camera>)> = vec![("Off".into(), None)];
+        for (n, a) in [("Front", poser_core::camera::ViewAxis::Front), ("Side", poser_core::camera::ViewAxis::Right), ("Top", poser_core::camera::ViewAxis::Top), ("Back", poser_core::camera::ViewAxis::Back)] {
+            let mut c = app.cam;
+            c.set_view_axis(a);
+            c.projection = Projection::Orthographic;
+            let (cc, rr) = app.cache.scene_bounds(&app.scene);
+            c.frame(cc, rr * 0.75);
+            c.roll = 0.0;
+            v.push((n.into(), Some(c)));
+        }
+        for (n, c) in &app.saved_views {
+            v.push((n.clone(), Some(*c)));
+        }
+        v
+    };
+    ui.horizontal_wrapped(|ui| {
+        for (n, c) in views {
+            let on = match (app.inset, c) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.rotation.dot(b.rotation).abs() > 0.9999 && a.projection == b.projection,
+                _ => false,
+            };
+            if ui.selectable_label(on, n).clicked() {
+                app.inset = c;
+                app.needs_render = true;
+            }
+        }
+    });
+    ui.separator();
     ui.label(RichText::new("Reference image").strong());
     let ctx = ui.ctx().clone();
     ui.horizontal(|ui| {

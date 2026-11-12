@@ -216,6 +216,9 @@ pub struct PoserApp {
     pub ctrl_down: bool,
     pub ref_image: Option<RefImage>,
     pub thumbs: crate::thumbs::Thumbs,
+    /// Picture-in-picture camera (None = off).
+    pub inset: Option<Camera>,
+    pub inset_tex: Option<egui::TextureId>,
 }
 
 impl PoserApp {
@@ -286,6 +289,8 @@ impl PoserApp {
             ctrl_down: false,
             ref_image: None,
             thumbs: Default::default(),
+            inset: None,
+            inset_tex: None,
         };
         let idx = app.add_human(HumanParams::default(), "Human");
         app.sel = Selection { figure: Some(idx), bone: None };
@@ -296,6 +301,12 @@ impl PoserApp {
             Ok("body") => app.props_tab = PropsTab::Body,
             Ok("hands") => app.props_tab = PropsTab::Hands,
             _ => {}
+        }
+        if std::env::var_os("POSER_INSET").is_some() {
+            let mut c = app.cam;
+            c.set_view_axis(ViewAxis::Right);
+            c.projection = Projection::Orthographic;
+            app.inset = Some(c);
         }
         if std::env::var_os("POSER_LBS").is_some() {
             poser_core::skinning::DUAL_QUATERNION.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -881,6 +892,7 @@ impl PoserApp {
 
     pub fn export_image(&mut self, path: PathBuf) {
         let Some(r) = self.renderer.as_mut() else { return };
+        r.use_slot(2);
         let (w, h) = (self.export.width.clamp(16, 8192), self.export.height.clamp(16, 8192));
         let (center, radius) = self.cache.scene_bounds(&self.scene);
         let draws = crate::viewport::build_draws(&self.scene, &self.cache, true);
@@ -1000,6 +1012,7 @@ impl PoserApp {
                 bounds_radius: r,
             };
             let Some(rd) = self.renderer.as_mut() else { return };
+            rd.use_slot(2);
             rd.render(&desc, &draws);
             for f in self.cache.figs.values_mut() {
                 f.deform_dirty = false;

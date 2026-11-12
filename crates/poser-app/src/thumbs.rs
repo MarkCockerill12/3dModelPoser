@@ -83,6 +83,7 @@ impl PoserApp {
                 bounds_radius: r,
             };
             let rd = self.renderer.as_mut().unwrap();
+            rd.use_slot(2);
             rd.render(&desc, &draws);
             if let Some((w, h, px)) = rd.read_output() {
                 let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px);

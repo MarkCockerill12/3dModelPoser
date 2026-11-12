@@ -143,6 +143,8 @@ pub struct Renderer {
     grid_ib: wgpu::Buffer,
     grid_count: u32,
     targets: Option<Targets>,
+    active_slot: u32,
+    spare: HashMap<u32, Targets>,
 }
 
 fn bgl_entry(binding: u32, vis: wgpu::ShaderStages, ty: wgpu::BindingType) -> wgpu::BindGroupLayoutEntry {
@@ -489,6 +491,8 @@ impl Renderer {
             grid_ib,
             grid_count: idx.len() as u32,
             targets: None,
+            active_slot: 0,
+            spare: HashMap::new(),
         }
     }
 
@@ -845,6 +849,18 @@ impl Renderer {
     }
 
     /// Render a frame into the internal output texture and return its view.
+    /// Switch to an independent set of render targets (0 = viewport, 1 = inset, 2 = offscreen).
+    pub fn use_slot(&mut self, slot: u32) {
+        if slot == self.active_slot {
+            return;
+        }
+        if let Some(cur) = self.targets.take() {
+            self.spare.insert(self.active_slot, cur);
+        }
+        self.targets = self.spare.remove(&slot);
+        self.active_slot = slot;
+    }
+
     pub fn render(&mut self, f: &FrameDesc, draws: &[MeshDraw]) -> &wgpu::TextureView {
         let w = f.width.max(1);
         let h = f.height.max(1);
