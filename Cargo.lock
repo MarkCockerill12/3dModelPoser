@@ -2582,7 +2582,7 @@ dependencies = [
 
 [[package]]
 name = "poser-ai"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "glam",
@@ -2592,7 +2592,7 @@ dependencies = [
 
 [[package]]
 name = "poser-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "eframe",
@@ -2613,7 +2613,7 @@ dependencies = [
 
 [[package]]
 name = "poser-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2628,7 +2628,7 @@ dependencies = [
 
 [[package]]
 name = "poser-io"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2646,7 +2646,7 @@ dependencies = [
 
 [[package]]
 name = "poser-render"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2658,7 +2658,7 @@ dependencies = [
 
 [[package]]
 name = "poser-rig"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "faer",

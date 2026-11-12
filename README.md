@@ -6,42 +6,52 @@ import, auto-rig and pose your own characters.
 
 Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well on integrated graphics.
 
-**Status:** v0.1 (early). Windows build on the [Releases](https://github.com/MarkCockerill12/3dModelPoser/releases) page.
+**Status:** v0.2 (preview). Windows build on the [Releases](https://github.com/MarkCockerill12/3dModelPoser/releases) page.
 
 ## Features
-- **Import** GLB / glTF, VRM (0.x and 1.0), FBX, OBJ and PMX (MikuMikuDance) with textures, morphs and animations.
+- **Realistic default body** built from MakeHuman's CC0 assets: one continuous anatomical body (not segments) with
+  sliders for gender, age (1-90), muscle, weight, height, ethnicity and breast size/firmness, stylised proportions
+  (head size, neck, torso, shoulders, arms, legs, hands, feet) and 21 body presets (athletic, bodybuilder, curvy,
+  elderly, teen, child, toddler, heroic comic, anime, chibi, fashion...). Optional CC0 clothes, shoes, hats,
+  10 hairstyles and 12 eyebrow styles that fit and follow every pose. The wooden art mannequin is still available.
+- **Import** GLB / glTF, VRM (0.x and 1.0), FBX, OBJ, PMX and PMD (MikuMikuDance) with textures, morphs and animations.
   Drag and drop files onto the window. Odd unit scales are fixed and models are stood on the floor.
-- **Rig detection** for Mixamo, VRoid/VRM, Unreal/MetaHuman-style, MakeHuman, Rigify, 3ds Max Biped, Character Creator,
-  Source engine and MMD (Japanese bone names) rigs, all mapped onto one standard humanoid skeleton.
-- **Auto-rig** static humanoid meshes: place 8 markers (they are guessed for you), then bone-heat skin weights are
-  computed in well under a second. Props held by the character stay rigid.
+- **Rig detection** for Mixamo, VRoid/VRM, Unreal, MakeHuman, Rigify, 3ds Max Biped, Character Creator, Source engine
+  and MMD (Japanese bone names) rigs, all mapped onto one standard humanoid skeleton.
+- **Auto-rig** static humanoid meshes (8 draggable markers, finger bones fitted per hand, bone-heat skin weights in
+  well under a second; props held by the character stay rigid) or **rig manually** Blender-style: add / extrude / move
+  / delete bones, set parents and humanoid roles, symmetrize, then bind with automatic weights.
 - **Posing**
-  - Click a body part to select it, then drag the rotation rings (twist ring follows the bone).
-  - Drag hands/feet to reach with IK, drag elbows/knees to swing them, drag the hips to move the body with feet kept planted.
-  - Pin joints (P) so they stay put while you pose the rest.
-  - Anatomical joint limits, joint-stress highlighting, mirror / flip pose, copy & paste poses.
+  - **Guided mode** (Design Doll feel: anatomical limits, natural IK) or **Free mode** (Blender feel: no limits,
+    Ctrl+drag or G moves any bone).
+  - Click a body part to select it, drag the rotation rings; the orange "donut" swings the elbow/knee while the
+    hand/foot stays put; rotating one spine joint bends the whole spine smoothly.
+  - Drag hands/feet to reach with IK, drag fingers to curl them, drag the hips with feet kept planted.
+  - Pins, joint-stress highlighting, mirror / flip, copy & paste poses.
+  - Volume-preserving (dual-quaternion) skinning keeps shoulders, elbows and wrists from collapsing.
+- **Pose from photo**: load a photo and the pose of the person is estimated offline (RTMPose, nothing is uploaded)
+  and applied to your figure, with the photo shown behind it.
 - **Hands**: per-finger curl, spread and thumb-opposition sliders plus 15 hand presets.
-- **Library**: 17 full-body presets (standing, walking, running, sitting, kneeling, crouching, fighting, lying...) that
-  work on *any* humanoid, plus your own saved poses.
-- **Built-in mannequin** with 14 body presets (realistic, heroic, anime, teen, child, chibi, muscular, heavy, elderly...)
-  and sliders for height, heads tall, gender, muscle, weight, shoulder/hip width, limb, torso and neck length, hand/foot size.
-- **Proportions** on any model: per-bone length and girth.
-- **Animation**: play/scrub clips from imported files, freeze any frame as a pose, and **retarget** animations from other
-  files (e.g. Mixamo FBX) onto any humanoid.
-- **Rendering for artists**: clay, textured, toon, form (matcap), silhouette and x-ray shading; outlines; shadows;
-  up to 4 lights with time-of-day presets; perspective, orthographic, **dynamic perspective** (separate near/far FOV
-  for exaggerated foreshortening) and lens distortion; focal length and dutch angle; eye-level line, vanishing-point
-  guides, rule-of-thirds grid; saved camera views.
-- **Export** transparent PNGs at any resolution, and posed models as GLB or OBJ (for Clip Studio, Blender, etc.).
+- **Library** with thumbnails: 17 full-body presets that work on *any* humanoid, plus your own saved poses.
+- **Animation**: play/scrub clips from imported files, freeze any frame, and **retarget** animations from other files
+  (e.g. Mixamo FBX) onto any humanoid.
+- **Rendering for artists**: clay, textured, toon, form, silhouette and x-ray shading; outlines; shadows; up to 4 lights
+  with time-of-day presets; perspective, orthographic, **dynamic perspective** (separate near/far FOV) and lens
+  distortion; focal length and dutch angle; eye-level line, vanishing-point guides, rule-of-thirds grid; saved views;
+  a **picture-in-picture** second view; a **reference image** behind or traced over the figure.
+- **Export** transparent PNGs at any resolution, posed models as GLB or OBJ, and **rigged models as GLB or FBX**
+  (skeleton, skin weights and current pose; tested in Blender 5).
 - **Scenes** save to `.poser` files.
 
-## Controls (Blender style)
+## Controls (Blender style, mouse and touchpad)
 | Input | Action |
 | --- | --- |
 | Middle drag / Shift+middle / Ctrl+middle | Orbit / pan / zoom |
+| Right drag (Shift / Ctrl) | Orbit (pan / zoom) |
+| Left drag on empty space (Shift) | Orbit (pan) |
 | Wheel | Zoom |
 | Alt + left drag (+Shift / +Ctrl) | Orbit / pan / zoom without a middle button |
-| Touchpad two-finger drag, pinch | Orbit (Shift: pan), zoom |
+| Touchpad two-finger drag, pinch | Orbit (Shift: pan), zoom. Camera tab: "always zoom" for smooth-scroll mice |
 | 1 / 3 / 7 (Ctrl: opposite), 5 | Front / right / top view, perspective-ortho toggle |
 | 2 4 6 8, Shift+4/6 | Orbit 15 degrees, roll |
 | Home, `.` or F | Frame all, frame selected |
@@ -53,6 +63,7 @@ Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well o
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
 | Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+I | New / open / save scene, import model |
 | Ctrl+Shift+S | Export image |
+| Skeleton edit: E / Ctrl+click / X | Extrude child bone / add bone / delete bone |
 | N / T, F1 | Toggle sidebar / toolbar, controls help |
 
 ## Building
@@ -63,4 +74,5 @@ cargo run --release -p poser-app
 ```
 
 ## License
-MIT.
+MIT. Bundled MakeHuman body, clothes and hair assets are CC0 (see `assets/makehuman`). The RTMPose model is
+Apache-2.0 (see `assets/ai`).
