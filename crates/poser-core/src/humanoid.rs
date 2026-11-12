@@ -1,7 +1,7 @@
 //! Canonical humanoid skeleton (VRM 1.0 bone set), rig auto-detection, T-pose normalisation
 //! and joint limits.
 use crate::skeleton::Skeleton;
-use glam::{EulerRot, Quat, Vec3};
+use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -185,24 +185,25 @@ impl HumanBone {
 
     /// Default joint limits in degrees, normalised frame (see [`JointLimit`]).
     pub fn default_limit(self) -> Option<JointLimit> {
-        let l = |x: (f32, f32), y: (f32, f32), z: (f32, f32)| JointLimit { x, y, z };
+        let l = |x: (f32, f32), y: (f32, f32), z: (f32, f32)| JointLimit { x, y, z, twist: 0 };
         let left = match self.side() {
             Side::Right => self.mirror(),
             _ => self,
         };
         let lim = match left {
             H::Hips => return None,
-            H::Spine | H::Chest | H::UpperChest => l((-30.0, 45.0), (-35.0, 35.0), (-30.0, 30.0)),
+            // Per joint; three joints give ~90 deg flexion, ~36 extension, ~45 twist, ~42 side bend.
+            H::Spine | H::Chest | H::UpperChest => l((-12.0, 30.0), (-15.0, 15.0), (-14.0, 14.0)),
             H::Neck => l((-40.0, 50.0), (-60.0, 60.0), (-35.0, 35.0)),
             H::Head => l((-45.0, 45.0), (-60.0, 60.0), (-35.0, 35.0)),
             H::LeftEye => l((-25.0, 25.0), (-35.0, 35.0), (-1.0, 1.0)),
             H::Jaw => l((-2.0, 35.0), (-8.0, 8.0), (-5.0, 5.0)),
             H::LeftShoulder => l((-20.0, 20.0), (-25.0, 20.0), (-15.0, 35.0)),
-            H::LeftUpperArm => l((-95.0, 95.0), (-120.0, 45.0), (-95.0, 110.0)),
-            H::LeftLowerArm => l((-95.0, 95.0), (-155.0, 8.0), (-8.0, 8.0)),
+            H::LeftUpperArm => l((-80.0, 80.0), (-120.0, 45.0), (-95.0, 110.0)),
+            H::LeftLowerArm => l((-85.0, 85.0), (-150.0, 5.0), (-6.0, 6.0)),
             H::LeftHand => l((-25.0, 25.0), (-35.0, 35.0), (-85.0, 75.0)),
             H::LeftUpperLeg => l((-125.0, 35.0), (-50.0, 50.0), (-35.0, 75.0)),
-            H::LeftLowerLeg => l((-3.0, 155.0), (-10.0, 10.0), (-5.0, 5.0)),
+            H::LeftLowerLeg => l((-2.0, 150.0), (-8.0, 8.0), (-4.0, 4.0)),
             H::LeftFoot => l((-35.0, 55.0), (-30.0, 30.0), (-30.0, 30.0)),
             H::LeftToes => l((-60.0, 35.0), (-5.0, 5.0), (-5.0, 5.0)),
             b if b.is_finger() => {
@@ -219,6 +220,14 @@ impl HumanBone {
             }
             _ => return None,
         };
+        // Twist runs along the bone.
+        let twist = match self.tpose_direction() {
+            Some(d) if d.x.abs() >= d.y.abs() && d.x.abs() >= d.z.abs() => 0,
+            Some(d) if d.y.abs() >= d.z.abs() => 1,
+            Some(_) => 2,
+            None => 2, // feet, toes, eyes, jaw point forward
+        };
+        let lim = JointLimit { twist, ..lim };
         Some(if self.side() == Side::Right { lim.mirrored() } else { lim })
     }
 }
@@ -245,36 +254,91 @@ pub fn finger_bone(side: Side, finger: Finger, seg: usize) -> Option<HumanBone> 
     Some(FINGER_TABLE[base + fi * 3 + seg])
 }
 
-/// Joint rotation limits (degrees) as Euler ranges in the normalised (T-pose, world-aligned) frame.
+/// Joint rotation limits (degrees) in the normalised (T-pose, world-aligned) frame.
+/// `twist` selects the axis that runs along the bone (0 = X, 1 = Y, 2 = Z): rotation about it is
+/// limited by that axis' range; the remaining "swing" is limited by an elliptical cone built from the
+/// other two ranges. This is smooth everywhere (no Euler wrap-around jumps).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JointLimit {
     pub x: (f32, f32),
     pub y: (f32, f32),
     pub z: (f32, f32),
+    #[serde(default)]
+    pub twist: u8,
 }
 
 impl JointLimit {
     /// Mirror across the YZ plane: Y and Z rotations change sign.
     pub fn mirrored(&self) -> Self {
-        Self { x: self.x, y: (-self.y.1, -self.y.0), z: (-self.z.1, -self.z.0) }
+        Self { x: self.x, y: (-self.y.1, -self.y.0), z: (-self.z.1, -self.z.0), twist: self.twist }
+    }
+
+    fn range(&self, i: usize) -> (f32, f32) {
+        [self.x, self.y, self.z][i]
+    }
+
+    /// (twist degrees, swing rotation-vector components in degrees on the two other axes).
+    fn decompose(&self, q: Quat) -> (f32, [f32; 3]) {
+        let q = if q.w < 0.0 { -q } else { q };
+        let t = self.twist as usize;
+        let axis = [Vec3::X, Vec3::Y, Vec3::Z][t];
+        let v = Vec3::new(q.x, q.y, q.z);
+        let p = axis * v.dot(axis);
+        let twist_q = Quat::from_xyzw(p.x, p.y, p.z, q.w);
+        let twist_q = if twist_q.length_squared() < 1e-12 { Quat::IDENTITY } else { twist_q.normalize() };
+        let twist = 2.0 * v.dot(axis).atan2(q.w);
+        let swing = (q * twist_q.conjugate()).normalize();
+        let (ax, ang) = swing.to_axis_angle();
+        let rv = ax * ang;
+        (twist.to_degrees(), [rv.x.to_degrees(), rv.y.to_degrees(), rv.z.to_degrees()])
     }
 
     pub fn clamp(&self, q: Quat) -> Quat {
-        let (z, y, x) = q.to_euler(EulerRot::ZYX);
-        let c = |v: f32, r: (f32, f32)| v.to_degrees().clamp(r.0, r.1).to_radians();
-        Quat::from_euler(EulerRot::ZYX, c(z, self.z), c(y, self.y), c(x, self.x))
+        let t = self.twist as usize;
+        let (tw, sv) = self.decompose(q);
+        let tr = self.range(t);
+        let tw = tw.clamp(tr.0, tr.1);
+        // Elliptical swing cone with asymmetric bounds.
+        let others: Vec<usize> = (0..3).filter(|i| *i != t).collect();
+        let mut out = [0.0f32; 3];
+        let mut e = 0.0f32;
+        for &i in &others {
+            let r = self.range(i);
+            let b = if sv[i] >= 0.0 { r.1.max(0.5) } else { (-r.0).max(0.5) };
+            e += (sv[i] / b).powi(2);
+            out[i] = sv[i];
+        }
+        if e > 1.0 {
+            let k = 1.0 / e.sqrt();
+            for &i in &others {
+                out[i] *= k;
+            }
+            // Bounds that are tiny on one side behave like a hinge: clamp per axis too.
+            for &i in &others {
+                let r = self.range(i);
+                out[i] = out[i].clamp(r.0.min(0.0), r.1.max(0.0));
+            }
+        }
+        let axis = [Vec3::X, Vec3::Y, Vec3::Z][t];
+        let rv = Vec3::new(out[0], out[1], out[2]) * std::f32::consts::PI / 180.0;
+        let swing = if rv.length_squared() < 1e-12 { Quat::IDENTITY } else { Quat::from_scaled_axis(rv) };
+        (swing * Quat::from_axis_angle(axis, tw.to_radians())).normalize()
     }
 
     /// 0 = comfortably inside, 1 = at the limit (used for joint-stress display).
     pub fn stress(&self, q: Quat) -> f32 {
-        let (z, y, x) = q.to_euler(EulerRot::ZYX);
-        let s = |v: f32, r: (f32, f32)| {
-            let v = v.to_degrees();
-            let span = (r.1 - r.0).max(1.0);
-            let mid = (r.0 + r.1) * 0.5;
-            ((v - mid).abs() / (span * 0.5)).clamp(0.0, 1.5)
-        };
-        s(x, self.x).max(s(y, self.y)).max(s(z, self.z))
+        let t = self.twist as usize;
+        let (tw, sv) = self.decompose(q);
+        let tr = self.range(t);
+        let mid = (tr.0 + tr.1) * 0.5;
+        let ts = ((tw - mid).abs() / ((tr.1 - tr.0).max(1.0) * 0.5)).clamp(0.0, 1.5);
+        let mut e = 0.0f32;
+        for i in (0..3).filter(|i| *i != t) {
+            let r = self.range(i);
+            let b = if sv[i] >= 0.0 { r.1.max(0.5) } else { (-r.0).max(0.5) };
+            e += (sv[i] / b).powi(2);
+        }
+        ts.max(e.sqrt()).min(1.5)
     }
 }
 
@@ -837,5 +901,33 @@ mod tests {
         assert_eq!(H::LeftIndexIntermediate.parent(), Some(H::LeftIndexProximal));
         assert_eq!(H::RightThumbMetacarpal.parent(), Some(H::RightHand));
         assert_eq!(H::LeftHand.mirror(), H::RightHand);
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    #[test]
+    fn elbow_is_a_hinge() {
+        let l = HumanBone::LeftLowerArm.default_limit().unwrap();
+        // Bending forward (about -Y) is allowed up to ~150 degrees.
+        let ok = Quat::from_rotation_y(-100f32.to_radians());
+        assert!(l.clamp(ok).angle_between(ok) < 0.01);
+        // Bending sideways (about Z) is not.
+        let bad = Quat::from_rotation_z(60f32.to_radians());
+        assert!(l.clamp(bad).angle_between(Quat::IDENTITY) < 0.15);
+        // Hyperextension is stopped near straight.
+        let back = Quat::from_rotation_y(40f32.to_radians());
+        assert!(l.clamp(back).angle_between(Quat::IDENTITY) < 0.12);
+    }
+
+    #[test]
+    fn knee_bends_backwards_only() {
+        let l = HumanBone::RightLowerLeg.default_limit().unwrap();
+        let ok = Quat::from_rotation_x(90f32.to_radians());
+        assert!(l.clamp(ok).angle_between(ok) < 0.01);
+        let bad = Quat::from_rotation_x(-60f32.to_radians());
+        assert!(l.clamp(bad).angle_between(Quat::IDENTITY) < 0.06);
     }
 }

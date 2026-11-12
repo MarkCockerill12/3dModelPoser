@@ -70,7 +70,9 @@ pub enum IkKind {
 #[derive(Clone, Debug)]
 pub enum Drag {
     Ring { ring: Ring, axis_world: Vec3, last_angle: f32, tangent: Option<egui::Vec2>, last_pos: egui::Pos2 },
-    Ik { figure: usize, kind: IkKind, effector: usize, grab_offset: Vec3, plane_point: Vec3 },
+    /// IK / FK drag. Re-solved every frame from `start` with the total pointer movement, so it is
+    /// smooth and fully reversible; nothing moves until the pointer travels a few pixels.
+    Ik { figure: usize, kind: IkKind, effector: usize, start: Vec<poser_core::Transform>, start_target: Vec3, plane_point: Vec3, press: egui::Pos2, started: bool },
     MoveFigure { figure: usize, grab_offset: Vec3, plane_point: Vec3 },
     RotateFigure { figure: usize },
     Handle { handle: crate::gizmo::Handle, mode: GizmoMode, last: egui::Pos2 },
@@ -227,6 +229,7 @@ pub struct PoserApp {
     /// Free mode: Ctrl+drag a bone moves it instead of rotating.
     pub drag_translate: bool,
     pub ctrl_down: bool,
+    pub press_pos: egui::Pos2,
     pub ref_image: Option<RefImage>,
     pub thumbs: crate::thumbs::Thumbs,
     /// Picture-in-picture camera (None = off).
@@ -307,6 +310,7 @@ impl PoserApp {
             rig_markers: HashMap::new(),
             drag_translate: false,
             ctrl_down: false,
+            press_pos: egui::Pos2::ZERO,
             ref_image: None,
             thumbs: Default::default(),
             inset: None,
@@ -749,6 +753,55 @@ impl PoserApp {
         Some((m.humanoid.get(r)?, m.humanoid.get(mid)?, end, hint))
     }
 
+    fn guided(&self) -> bool {
+        self.opts.mode == PoseMode::Guided && self.opts.limits
+    }
+
+    /// Clamp a set of canonical bones (Guided mode only).
+    pub fn clamp_humans(&mut self, idx: usize, bones: &[HumanBone]) {
+        let ids: Vec<usize> = bones.iter().filter_map(|h| self.scene.figures[idx].model.humanoid.get(*h)).collect();
+        for b in ids {
+            self.clamp_bone(idx, b);
+        }
+    }
+
+    /// Natural shoulder rhythm: raising an arm lifts the collarbone a little (Guided mode), keeping
+    /// the arm pointing where it was. Stops raised arms looking dislocated.
+    pub fn shoulder_rhythm(&mut self, idx: usize) {
+        if !self.guided() {
+            return;
+        }
+        let fig = &mut self.scene.figures[idx];
+        let m = fig.model.clone();
+        let hm = &m.humanoid;
+        if !hm.is_valid() || hm.tpose_world.len() != m.skeleton.len() {
+            return;
+        }
+        let sk = &m.skeleton;
+        let shapes = fig.shapes_opt().map(|s| s.to_vec());
+        for (sh, ua, ch, side) in [
+            (HumanBone::LeftShoulder, HumanBone::LeftUpperArm, HumanBone::UpperChest, 1.0f32),
+            (HumanBone::RightShoulder, HumanBone::RightUpperArm, HumanBone::UpperChest, -1.0f32),
+        ] {
+            let (Some(sb), Some(ub)) = (hm.get(sh), hm.get(ua)) else { continue };
+            let cb = hm.get(ch).or(hm.get(HumanBone::Chest)).unwrap_or(sb);
+            let w = sk.evaluate(&fig.pose.locals, shapes.as_deref()).world;
+            let n = |b: usize| (mat_rotation(&w[b]) * hm.tpose_world[b].inverse()).normalize();
+            let dir = n(ub) * Vec3::new(side, 0.0, 0.0);
+            let local = n(cb).inverse() * dir;
+            let elev = local.y.clamp(-1.0, 1.0).asin();
+            let fwd = local.z.clamp(-1.0, 1.0).asin();
+            let raise = ((elev - 0.35) * 0.45).clamp(0.0, 0.5);
+            let protract = (fwd * 0.18).clamp(-0.1, 0.25);
+            let d = Quat::from_rotation_z(raise * side) * Quat::from_rotation_y(-protract * side);
+            let keep = mat_rotation(&w[ub]);
+            fig.pose.locals[sb].rotation = hm.to_local(sk, sb, d);
+            let w2 = sk.evaluate(&fig.pose.locals, shapes.as_deref()).world;
+            let pr = sk.bones[ub].parent.map(|p| mat_rotation(&w2[p])).unwrap_or(Quat::IDENTITY);
+            fig.pose.locals[ub].rotation = (pr.inverse() * keep).normalize();
+        }
+    }
+
     /// Keep pinned hands/feet in place (two-bone IK + restore world rotation).
     pub fn solve_pins(&mut self, idx: usize, skip_bone: Option<usize>) {
         let id = self.scene.figures[idx].id;
@@ -1028,8 +1081,9 @@ impl PoserApp {
         let has_fingers = self.scene.figures[idx].model.humanoid.get(poser_core::humanoid::HumanBone::LeftIndexProximal).is_some();
         self.scene.render.show_joints = false;
         self.sel = Selection::default();
-        let mut poses = self.body_presets.clone();
-        for h in if has_fingers { self.hand_presets.clone() } else { vec![] } {
+        let drag_test = std::env::var_os("POSER_DRAGTEST").is_some();
+        let mut poses = if drag_test { self.drag_test_poses(idx) } else { self.body_presets.clone() };
+        for h in if has_fingers && !drag_test { self.hand_presets.clone() } else { vec![] } {
             // Hands shown on a figure holding both hands up in front of the face.
             let mut p = self.body_presets.iter().find(|p| p.name == "T-pose").cloned().unwrap_or_default();
             p.name = format!("hand {}", h.name);
@@ -1041,8 +1095,8 @@ impl PoserApp {
             }
             poses.push(p);
         }
-        let (tw, th) = (360u32, 450u32);
-        let cols = 7u32;
+        let (tw, th) = if drag_test { (560u32, 700u32) } else { (360u32, 450u32) };
+        let cols = if drag_test { 4u32 } else { 7u32 };
         let rows = (poses.len() as u32).div_ceil(cols);
         let mut sheet = image::RgbaImage::new(tw * cols, th * rows);
         for (i, p) in poses.iter().enumerate() {
@@ -1060,7 +1114,7 @@ impl PoserApp {
                 self.cam.frame(hp + Vec3::new(0.0, 0.03, 0.05), 0.12);
             } else {
                 self.cam.set_yaw_pitch(30f32.to_radians(), -10f32.to_radians());
-                self.cam.frame(c, r * 0.85);
+                self.cam.frame(c, r * if drag_test { 0.62 } else { 0.85 });
             }
             let draws = crate::viewport::build_draws(&self.scene, &self.cache, true);
             let desc = poser_render::FrameDesc {

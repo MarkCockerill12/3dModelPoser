@@ -151,6 +151,44 @@ pub fn ccd(
 }
 
 /// Rotate `bone` so that its axis points at `target` (world space), keeping twist minimal.
+/// Bend a chain (root first) so `effector` moves towards `target`, spreading the bend evenly
+/// over every joint (a smooth curve, like a real spine) instead of CCD's "all in one joint".
+/// `max_angle[i]` caps the extra rotation of joint i (radians); `limit` clamps each joint.
+#[allow(clippy::too_many_arguments)]
+pub fn distribute_aim(
+    skel: &Skeleton,
+    shapes: Option<&[BoneShape]>,
+    locals: &mut [Transform],
+    chain: &[usize],
+    effector: usize,
+    target: Vec3,
+    max_angle: &[f32],
+    mut limit: impl FnMut(usize, &mut Transform),
+) {
+    let n = chain.len();
+    for pass in 0..2 {
+        for (i, &b) in chain.iter().enumerate() {
+            let world = skel.evaluate(locals, shapes).world;
+            let p = pos(&world[b]);
+            let e = (pos(&world[effector]) - p).normalize_or_zero();
+            let t = (target - p).normalize_or_zero();
+            if e == Vec3::ZERO || t == Vec3::ZERO {
+                continue;
+            }
+            let (axis, angle) = Quat::from_rotation_arc(e, t).to_axis_angle();
+            // First pass: even share of what is left; second pass: small correction.
+            let share = if pass == 0 { 1.0 / (n - i) as f32 } else { 0.5 / n as f32 };
+            let cap = max_angle.get(i).copied().unwrap_or(f32::MAX);
+            let a = (angle * share).min(cap);
+            if a.abs() < 1e-5 || !axis.is_finite() {
+                continue;
+            }
+            rotate_bone_world(skel, &world, locals, b, Quat::from_axis_angle(axis, a));
+            limit(b, &mut locals[b]);
+        }
+    }
+}
+
 pub fn aim_bone(skel: &Skeleton, shapes: Option<&[BoneShape]>, locals: &mut [Transform], bone: usize, target: Vec3) {
     let world = skel.evaluate(locals, shapes).world;
     let p = pos(&world[bone]);

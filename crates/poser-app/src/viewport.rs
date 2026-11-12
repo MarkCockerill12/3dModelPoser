@@ -401,6 +401,7 @@ impl PoserApp {
 
     fn on_press(&mut self, view: &ViewCtx, p: Pos2, shift: bool) {
         self.drag_translate = self.ctrl_down;
+        self.press_pos = p;
         // Navigation gizmo (click an axis bubble).
         let wc = self.axis_widget_center(view.rect);
         if (p - wc).length() < 50.0 {
@@ -506,12 +507,54 @@ impl PoserApp {
                 (IkKind::Aim { bone }, child.unwrap_or(bone))
             }
         };
-        let eff_world = c.world.transform_point3(c.pose.world.get(effector)?.w_axis.truncate());
-        let follow_cursor = matches!(kind, IkKind::Aim { .. } | IkKind::Swing { .. });
-        let follow_cursor = follow_cursor && !matches!(kind, IkKind::Translate { .. });
-        let grab_offset = if follow_cursor { Vec3::ZERO } else { eff_world - grab };
-        let plane_point = if follow_cursor { grab } else { eff_world };
-        Some(Drag::Ik { figure: f, kind, effector, grab_offset, plane_point })
+        let start_target = c.pose.world.get(effector)?.w_axis.truncate();
+        let plane_point = c.world.transform_point3(start_target);
+        let _ = grab;
+        Some(Drag::Ik { figure: f, kind, effector, start: fig.pose.locals.clone(), start_target, plane_point, press: self.press_pos, started: false })
+    }
+
+    /// Debug (POSER_DRAGTEST): simulate drags of the main handles by model-space offsets through
+    /// the real IK path and return the resulting poses for a contact sheet.
+    pub fn drag_test_poses(&mut self, f: usize) -> Vec<poser_core::pose::HumanPose> {
+        let base = self.scene.figures[f].pose.locals.clone();
+        let tests: &[(H, Vec3)] = &[
+            (H::LeftHand, Vec3::new(0.0, 0.7, 0.0)),
+            (H::LeftHand, Vec3::new(-0.3, 0.2, 0.6)),
+            (H::LeftHand, Vec3::new(-0.8, 0.3, 0.3)),
+            (H::LeftHand, Vec3::new(0.1, -0.3, -0.5)),
+            (H::LeftHand, Vec3::new(1.0, 1.0, 0.8)),
+            (H::LeftHand, Vec3::new(-0.3, 0.6, -0.2)),
+            (H::LeftHand, Vec3::new(-0.5, 0.45, 0.25)),
+            (H::LeftFoot, Vec3::new(0.0, 0.5, 0.5)),
+            (H::LeftFoot, Vec3::new(0.0, 1.2, 0.4)),
+            (H::LeftFoot, Vec3::new(0.0, 0.3, -0.6)),
+            (H::LeftFoot, Vec3::new(-0.6, 0.3, 0.0)),
+            (H::LeftLowerArm, Vec3::new(0.0, 0.3, 0.3)),
+            (H::LeftLowerLeg, Vec3::new(0.3, 0.0, 0.3)),
+            (H::Head, Vec3::new(0.0, -0.3, 0.4)),
+            (H::Chest, Vec3::new(0.3, -0.2, 0.3)),
+            (H::Hips, Vec3::new(0.0, -0.4, 0.0)),
+        ];
+        let mut out = vec![];
+        for (hb, off) in tests {
+            self.scene.figures[f].pose.locals = base.clone();
+            self.scene.figures[f].touch();
+            self.cache.update(&self.scene, None, None);
+            let Some(bone) = self.scene.figures[f].model.humanoid.get(*hb) else { continue };
+            let Some(Drag::Ik { kind, effector, start_target, .. }) = self.begin_ik(f, bone, Vec3::ZERO) else { continue };
+            // Step the drag like the mouse does, re-solving from the start pose each frame.
+            for k in 1..=20 {
+                self.scene.figures[f].pose.locals = base.clone();
+                self.apply_ik(f, &kind, effector, start_target + *off * (k as f32 / 20.0));
+            }
+            let fig = &self.scene.figures[f];
+            let mut p = poser_core::pose::extract_human_pose(&fig.model.skeleton, &fig.model.humanoid, &fig.pose.locals);
+            p.name = format!("{hb:?} {off:?}");
+            out.push(p);
+        }
+        self.scene.figures[f].pose.locals = base;
+        self.scene.figures[f].touch();
+        out
     }
 
     fn ensure_undo(&mut self, label: &str) {
@@ -625,7 +668,7 @@ impl PoserApp {
                     (p - last_pos).dot(t) / gizmo::RING_PX
                 } else {
                     0.0
-                };
+                } * if shift { 0.3 } else { 1.0 };
                 if phi.abs() > 1e-6 && ring == Ring::Swing {
                     self.ensure_undo("Swing limb");
                     if let Some((root, _, end)) = self.swing_chain_for(f, b) {
@@ -663,6 +706,7 @@ impl PoserApp {
                     let w = model.skeleton.evaluate(&fig.pose.locals, fig.shapes_opt()).world;
                     ik::rotate_bone_world(&model.skeleton, &w, &mut fig.pose.locals, b, q_model);
                     self.clamp_bone(f, b);
+                    self.shoulder_rhythm(f);
                     self.solve_pins(f, Some(b));
                     self.scene.figures[f].touch();
                     self.stop_anim(f);
@@ -670,15 +714,23 @@ impl PoserApp {
                 // Keep using the ring's initial axis for the whole drag (stable feel).
                 self.drag = Some(Drag::Ring { ring, axis_world, last_angle: a, tangent, last_pos: p });
             }
-            Drag::Ik { figure, kind, effector, grab_offset, plane_point } => {
-                let target_world = view.drag_point(p, plane_point) + grab_offset;
+            Drag::Ik { figure, kind, effector, start, start_target, plane_point, press, started } => {
+                // Click selects; posing only starts once the pointer really moves.
+                if !started && (p - press).length() < 5.0 {
+                    return;
+                }
+                let fine = if shift { 0.3 } else { 1.0 };
+                let dw = (view.drag_point(p, plane_point) - view.drag_point(press, plane_point)) * fine;
                 let fig = &self.scene.figures[figure];
                 let Some(c) = self.cache.figs.get(&fig.id) else { return };
-                let target = c.world.inverse().transform_point3(target_world);
+                let target = start_target + c.world.inverse().transform_vector3(dw);
                 self.ensure_undo("Pose");
+                // Re-solve from the pose at the start of the drag (smooth + reversible).
+                self.scene.figures[figure].pose.locals = start.clone();
                 self.apply_ik(figure, &kind, effector, target);
                 self.scene.figures[figure].touch();
                 self.stop_anim(figure);
+                self.drag = Some(Drag::Ik { figure, kind, effector, start, start_target, plane_point, press, started: true });
             }
             Drag::MoveFigure { figure, grab_offset, plane_point } => {
                 self.ensure_undo("Move");
@@ -734,15 +786,48 @@ impl PoserApp {
         match kind {
             IkKind::Limb { root, mid, end, hint } => {
                 let keep = mat_rotation(&w[*end]);
+                let guided = self.opts.mode == crate::app::PoseMode::Guided && self.opts.limits;
+                let is_arm = matches!(model.humanoid.human_of(*end), Some(H::LeftHand | H::RightHand));
+                // Out of reach: lean the collarbone and spine towards the target (Design Doll style).
+                let reach = (w[*mid].w_axis.truncate() - w[*root].w_axis.truncate()).length()
+                    + (w[*end].w_axis.truncate() - w[*mid].w_axis.truncate()).length();
+                let to_t = (target - w[*root].w_axis.truncate()).normalize_or_zero();
+                // Only lean for reaches up / out / forward; low or behind-the-back targets just straighten the arm.
+                if guided && is_arm && to_t.y > -0.25 && (target - w[*root].w_axis.truncate()).length() > reach * 0.96 {
+                    let hm = &model.humanoid;
+                    let sh = if matches!(hm.human_of(*end), Some(H::LeftHand)) { H::LeftShoulder } else { H::RightShoulder };
+                    let chain: Vec<usize> = [H::Spine, H::Chest, H::UpperChest, sh].iter().filter_map(|h| hm.get(*h)).collect();
+                    let limits: Vec<Option<poser_core::humanoid::JointLimit>> = chain.iter().map(|b| hm.human_of(*b).and_then(|h| h.default_limit())).collect();
+                    let chain_c = chain.clone();
+                    // Aim the shoulder joint (not the hand) a bit closer to the target.
+                    let shoulder_goal = target - (target - w[*root].w_axis.truncate()).normalize_or_zero() * reach * 0.95;
+                    // Small, evenly spread lean: the spine never bends more than ~25 degrees for a reach.
+                    let caps: Vec<f32> = chain.iter().map(|b| if hm.human_of(*b) == Some(sh) { 0.35 } else { 0.14 }).collect();
+                    ik::distribute_aim(sk, shapes.as_deref(), &mut fig.pose.locals, &chain, *root, shoulder_goal, &caps, |b, t| {
+                        if let Some(Some(l)) = chain_c.iter().position(|x| *x == b).map(|i| limits[i]) {
+                            let n = hm.to_normalized(sk, b, t.rotation);
+                            t.rotation = hm.to_local(sk, b, l.clamp(n));
+                        }
+                    });
+                }
                 ik::two_bone_ik(sk, shapes.as_deref(), &mut fig.pose.locals, *root, *mid, *end, target, *hint);
                 let w2 = sk.evaluate(&fig.pose.locals, shapes.as_deref()).world;
                 let pr = sk.bones[*end].parent.map(|p| mat_rotation(&w2[p])).unwrap_or(Quat::IDENTITY);
-                fig.pose.locals[*end].rotation = (pr.inverse() * keep).normalize();
                 let id = fig.id;
+                // Guided: the hand rides with the forearm (no flopping wrist) unless pinned.
+                let pinned = self.pins.contains_key(&(id, *end));
+                if !(guided && is_arm && !pinned) {
+                    fig.pose.locals[*end].rotation = (pr.inverse() * keep).normalize();
+                }
                 if let Some(pin) = self.pins.get_mut(&(id, *end)) {
                     pin.pos = target;
                     pin.rot = keep;
                 }
+                // Keep every joint of the limb anatomically possible.
+                self.clamp_bone(f, *root);
+                self.clamp_bone(f, *mid);
+                self.clamp_bone(f, *end);
+                self.shoulder_rhythm(f);
             }
             IkKind::Swing { root, end } => {
                 let a = w[*root].w_axis.truncate();
@@ -761,12 +846,18 @@ impl PoserApp {
                         ik::swing_chain(sk, shapes.as_deref(), &mut fig.pose.locals, *root, *end, true, angle);
                     }
                 }
+                self.clamp_bone(f, *root);
+                self.clamp_bone(f, effector);
+                self.shoulder_rhythm(f);
             }
             IkKind::Hips => {
                 let delta = target - w[effector].w_axis.truncate();
                 // Reuse the grab logic (keeps feet planted + pins).
                 let world_delta = fig.transform.rotation * (delta * fig.transform.scale.max_element());
                 self.grab_bone(f, effector, world_delta);
+                if self.opts.mode == crate::app::PoseMode::Guided {
+                    self.clamp_humans(f, &[H::LeftUpperLeg, H::RightUpperLeg, H::LeftLowerLeg, H::RightLowerLeg, H::LeftFoot, H::RightFoot]);
+                }
                 return;
             }
             IkKind::Ccd { chain, effector: e } => {
@@ -774,6 +865,32 @@ impl PoserApp {
                     chain.iter().map(|b| if self.opts.limits { model.humanoid.human_of(*b).and_then(|h| h.default_limit()) } else { None }).collect();
                 let hm = &model.humanoid;
                 let chain_c = chain.clone();
+                let is_finger = chain.iter().any(|b| hm.human_of(*b).is_some_and(|h| h.is_finger()));
+                if !is_finger && hm.tpose_world.len() == sk.len() {
+                    // Spine / neck: bend evenly along the chain (no kinks), capped per joint in Guided mode.
+                    let cap = if self.opts.mode == crate::app::PoseMode::Guided && self.opts.limits { 0.45 } else { f32::MAX };
+                    let caps = vec![cap; chain.len()];
+                    let neck = hm.get(H::Neck).filter(|n| !chain.contains(n));
+                    let head = hm.get(H::Head);
+                    let keep_head = head.map(|h| mat_rotation(&w[h]));
+                    ik::distribute_aim(sk, shapes.as_deref(), &mut fig.pose.locals, chain, *e, target, &caps, |b, t| {
+                        if let Some(Some(l)) = chain_c.iter().position(|x| *x == b).map(|i| limits[i]) {
+                            let n = hm.to_normalized(sk, b, t.rotation);
+                            t.rotation = hm.to_local(sk, b, l.clamp(n));
+                        }
+                    });
+                    // Bending the torso: the neck counter-balances so the head stays mostly upright.
+                    if let (Some(nk), Some(hd), Some(keep)) = (neck, head, keep_head) {
+                        let w2 = sk.evaluate(&fig.pose.locals, shapes.as_deref()).world;
+                        let cur = mat_rotation(&w2[hd]);
+                        let delta = (cur.slerp(keep, 0.6) * cur.inverse()).normalize();
+                        ik::rotate_bone_world(sk, &w2, &mut fig.pose.locals, nk, delta);
+                        if let Some(l) = H::Neck.default_limit().filter(|_| cap < f32::MAX) {
+                            let n = hm.to_normalized(sk, nk, fig.pose.locals[nk].rotation);
+                            fig.pose.locals[nk].rotation = hm.to_local(sk, nk, l.clamp(n));
+                        }
+                    }
+                } else {
                 ik::ccd(
                     sk,
                     shapes.as_deref(),
@@ -792,10 +909,12 @@ impl PoserApp {
                     },
                     0.6,
                 );
+                }
             }
             IkKind::Aim { bone } => {
                 ik::aim_bone(sk, shapes.as_deref(), &mut fig.pose.locals, *bone, target);
                 self.clamp_bone(f, *bone);
+                self.shoulder_rhythm(f);
             }
             IkKind::Translate { bone } => {
                 let w = sk.evaluate(&fig.pose.locals, shapes.as_deref()).world;
