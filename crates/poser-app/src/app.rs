@@ -25,6 +25,7 @@ pub enum Tool {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PropsTab {
+    Rig,
     Pose,
     Hands,
     Body,
@@ -96,6 +97,18 @@ pub struct Options {
     pub keep_feet_planted: bool,
 }
 
+/// Interactive auto-rig session (marker placement).
+pub struct RigSession {
+    pub figure_id: u64,
+    /// Model baked to model space facing +Z (what gets rigged).
+    pub prepared: Arc<Model>,
+    pub markers: poser_rig::Markers,
+    pub symmetric: bool,
+    pub drag: Option<usize>,
+    pub hover: Option<usize>,
+    pub computing: Option<Receiver<anyhow::Result<Model>>>,
+}
+
 /// Animation borrowed from another model and replayed through the humanoid mapping.
 pub struct Retarget {
     pub source: Arc<Model>,
@@ -156,6 +169,8 @@ pub struct PoserApp {
     pub last_time: f64,
     /// Debug: (output png, frames to wait) for --preset-sheet.
     pub selftest: Option<(PathBuf, u32)>,
+    pub rig: Option<RigSession>,
+    pub sheet_model: Option<PathBuf>,
 }
 
 impl PoserApp {
@@ -213,12 +228,15 @@ impl PoserApp {
             user_poses: load_user_poses(),
             last_time: 0.0,
             selftest: None,
+            rig: None,
+            sheet_model: None,
         };
         let idx = app.add_mannequin(MannequinParams::default(), "Mannequin");
         app.sel = Selection { figure: Some(idx), bone: None };
         app.frame_all(false);
         let args: Vec<String> = std::env::args().skip(1).collect();
         if let Some(i) = args.iter().position(|a| a == "--preset-sheet") {
+            app.sheet_model = args.get(i + 2).map(PathBuf::from);
             app.build_preset_sheet(args.get(i + 1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("presets.png")));
             return app;
         }
@@ -780,11 +798,38 @@ impl PoserApp {
     fn render_preset_sheet(&mut self, out: &std::path::Path) {
         self.scene.figures.clear();
         self.pins.clear();
-        let idx = self.add_mannequin(MannequinParams::default(), "Sheet");
+        let idx = match self.sheet_model.clone() {
+            Some(path) => {
+                let mut m = match poser_io::load_model(&path) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        println!("load failed: {e:#}");
+                        return;
+                    }
+                };
+                if !m.humanoid.is_valid() {
+                    let prep = poser_rig::prepare_for_rigging(&m);
+                    let mk = poser_rig::guess_markers(&prep);
+                    m = poser_rig::auto_rig(&prep, &mk).expect("auto-rig");
+                    println!("auto-rigged");
+                }
+                let (floor, top, center) = m.rest_extent();
+                let h = (top - floor).max(1e-4);
+                let s = 1.75 / h;
+                let idx = self.scene.add_model(Arc::new(m));
+                let t = &mut self.scene.figures[idx].transform;
+                t.scale = Vec3::splat(s);
+                t.translation = Vec3::new(-center.x * s, -floor * s, -center.z * s);
+                self.scene.render.shading = poser_core::scene::Shading::Textured;
+                idx
+            }
+            None => self.add_mannequin(MannequinParams::default(), "Sheet"),
+        };
+        let has_fingers = self.scene.figures[idx].model.humanoid.get(poser_core::humanoid::HumanBone::LeftIndexProximal).is_some();
         self.scene.render.show_joints = false;
         self.sel = Selection::default();
         let mut poses = self.body_presets.clone();
-        for h in self.hand_presets.clone() {
+        for h in if has_fingers { self.hand_presets.clone() } else { vec![] } {
             // Hands shown on a figure holding both hands up in front of the face.
             let mut p = self.body_presets.iter().find(|p| p.name == "T-pose").cloned().unwrap_or_default();
             p.name = format!("hand {}", h.name);
@@ -844,6 +889,74 @@ impl PoserApp {
         let _ = sheet.save(out);
     }
 
+    /// Begin auto-rigging the selected figure: bake its geometry and guess markers.
+    pub fn start_rig(&mut self, idx: usize) {
+        let fig = &self.scene.figures[idx];
+        let prepared = poser_rig::prepare_for_rigging(&fig.model);
+        let markers = poser_rig::guess_markers(&prepared);
+        let id = fig.id;
+        // Swap the figure to the prepared (unrigged, +Z facing) model so markers line up.
+        self.push_undo("Auto-rig");
+        let prepared = Arc::new(prepared);
+        let f = &mut self.scene.figures[idx];
+        f.model = prepared.clone();
+        f.pose = Pose::rest(&prepared.skeleton);
+        f.shapes = vec![];
+        f.morph_names.clear();
+        f.morph_weights.clear();
+        f.anim = None;
+        f.touch();
+        self.pins.retain(|(fid, _), _| *fid != id);
+        self.rig = Some(RigSession { figure_id: id, prepared, markers, symmetric: true, drag: None, hover: None, computing: None });
+        self.sel = Selection { figure: Some(idx), bone: None };
+        self.props_tab = PropsTab::Rig;
+        let now = self.last_time;
+        self.set_view(ViewAxis::Front, now);
+        self.cam.projection = Projection::Orthographic;
+        self.status = "Auto-rig: drag the coloured markers onto chin, wrists, elbows, knees and groin (check the side view too), then Apply".into();
+    }
+
+    pub fn apply_rig(&mut self) {
+        let Some(r) = self.rig.as_mut() else { return };
+        if r.computing.is_some() {
+            return;
+        }
+        let (tx, rx) = channel();
+        let model = r.prepared.clone();
+        let markers = r.markers;
+        std::thread::spawn(move || {
+            let _ = tx.send(poser_rig::auto_rig(&model, &markers));
+        });
+        r.computing = Some(rx);
+        self.status = "Computing skin weights...".into();
+    }
+
+    pub fn poll_rig(&mut self) {
+        let Some(r) = self.rig.as_mut() else { return };
+        let Some(rx) = r.computing.as_ref() else { return };
+        let Ok(res) = rx.try_recv() else { return };
+        let id = r.figure_id;
+        self.rig = None;
+        self.cam.projection = Projection::Perspective;
+        match (res, self.scene.index_of(id)) {
+            (Ok(model), Some(idx)) => {
+                let model = Arc::new(model);
+                let f = &mut self.scene.figures[idx];
+                f.pose = Pose::rest(&model.skeleton);
+                f.shapes = vec![Default::default(); model.skeleton.len()];
+                f.morph_names = model.morph_names();
+                f.morph_weights = vec![0.0; f.morph_names.len()];
+                f.model = model;
+                f.touch();
+                self.props_tab = PropsTab::Pose;
+                self.status = "Rigged! Click a body part to pose it. Presets, IK and hands (no fingers yet) all work now.".into();
+            }
+            (Err(e), _) => self.status = format!("Auto-rig failed: {e:#}"),
+            _ => {}
+        }
+        self.needs_render = true;
+    }
+
     pub fn save_user_pose(&mut self, name: String) {
         if let Some(mut p) = self.sel.figure.and_then(|f| self.current_human_pose(f)) {
             p.name = name;
@@ -885,6 +998,10 @@ impl eframe::App for PoserApp {
         self.frame_ms = self.frame_ms * 0.9 + dt * 1000.0 * 0.1;
         self.poll_imports(&ctx);
         self.poll_retargets(&ctx);
+        self.poll_rig();
+        if self.rig.as_ref().is_some_and(|r| r.computing.is_some()) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
         self.handle_dropped_files(&ctx);
         self.handle_shortcuts(&ctx);
         self.tick_animation(&ctx, dt.min(0.1));

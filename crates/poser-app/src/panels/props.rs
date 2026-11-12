@@ -25,6 +25,7 @@ pub fn right_panel(app: &mut PoserApp, ui: &mut egui::Ui) {
         ui.separator();
         ui.horizontal_wrapped(|ui| {
             for (t, l) in [
+                (PropsTab::Rig, "Rig"),
                 (PropsTab::Pose, "Pose"),
                 (PropsTab::Hands, "Hands"),
                 (PropsTab::Body, "Body"),
@@ -37,6 +38,7 @@ pub fn right_panel(app: &mut PoserApp, ui: &mut egui::Ui) {
         });
         ui.separator();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match app.props_tab {
+            PropsTab::Rig => rig_tab(app, ui),
             PropsTab::Pose => pose_tab(app, ui, &mut edited),
             PropsTab::Hands => hands_tab(app, ui, &mut edited),
             PropsTab::Body => body_tab(app, ui, &mut edited),
@@ -129,6 +131,73 @@ fn outliner(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
         }
     }
 }
+
+fn rig_tab(app: &mut PoserApp, ui: &mut egui::Ui) {
+    if let Some(r) = app.rig.as_mut() {
+        ui.label(RichText::new("Auto-rig: place the markers").strong());
+        ui.label("Drag each coloured dot onto the matching spot. Check the front (1) and side (3) views: markers should sit inside the body at the joint centres.");
+        ui.checkbox(&mut r.symmetric, "Symmetric (move left and right together)");
+        egui::Grid::new("markers").num_columns(2).show(ui, |ui| {
+            for i in 0..8 {
+                ui.label(poser_rig::MARKER_NAMES[i]);
+                let v = r.markers.get(i);
+                ui.label(RichText::new(format!("{:.2} {:.2} {:.2}", v.x, v.y, v.z)).monospace().weak());
+                ui.end_row();
+            }
+        });
+        let busy = r.computing.is_some();
+        let mut apply = false;
+        let mut reset = false;
+        let mut cancel = false;
+        ui.horizontal(|ui| {
+            apply = ui.add_enabled(!busy, egui::Button::new(RichText::new("Apply rig").strong())).clicked();
+            if busy {
+                ui.spinner();
+            }
+            reset = ui.add_enabled(!busy, egui::Button::new("Reset guesses")).clicked();
+            cancel = ui.add_enabled(!busy, egui::Button::new("Cancel")).clicked();
+        });
+        if reset {
+            if let Some(r) = app.rig.as_mut() {
+                r.markers = poser_rig::guess_markers(&r.prepared);
+            }
+        }
+        if apply {
+            app.apply_rig();
+        }
+        if cancel {
+            app.rig = None;
+            app.undo();
+            app.cam.projection = Projection::Perspective;
+        }
+        return;
+    }
+    let Some(f) = app.sel.figure.filter(|f| *f < app.scene.figures.len()) else {
+        ui.label("Select a figure to rig.");
+        return;
+    };
+    let fig = &app.scene.figures[f];
+    let start;
+    if fig.model.humanoid.is_valid() {
+        ui.label(RichText::new(format!("Humanoid rig: {} bones ({} mapped to the standard skeleton).", fig.model.skeleton.len(), fig.model.humanoid.bones.len())).color(Color32::from_rgb(140, 220, 140)));
+        ui.label(RichText::new("Presets, IK, mirroring, hands and retargeting all work on this figure.").weak());
+        ui.add_space(6.0);
+        start = ui.button("Re-rig with auto-rig (replaces skeleton and weights)").clicked();
+    } else if fig.model.has_skeleton() {
+        ui.label(RichText::new(format!("Custom rig with {} bones (not recognised as humanoid).", fig.model.skeleton.len())).color(Color32::from_rgb(255, 200, 120)));
+        ui.label("You can still pose every bone with the rings and G/R/S. To get presets and IK, auto-rig it as a humanoid:");
+        start = ui.button(RichText::new("Auto-rig as humanoid").strong()).clicked();
+    } else {
+        ui.label(RichText::new("No skeleton: this model is a static mesh.").color(Color32::from_rgb(255, 200, 120)));
+        ui.label("Auto-rig builds a full humanoid skeleton and computes skin weights. Works best on a character standing upright in a T- or A-pose.");
+        start = ui.button(RichText::new("Auto-rig as humanoid").strong()).clicked();
+        ui.label(RichText::new("Props (swords, chairs...) do not need rigging: use Move/Turn to place them.").weak());
+    }
+    if start {
+        app.start_rig(f);
+    }
+}
+
 
 fn pose_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
     let Some(f) = app.sel.figure.filter(|f| *f < app.scene.figures.len()) else {

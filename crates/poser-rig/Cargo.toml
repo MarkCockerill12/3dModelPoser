@@ -10,3 +10,4 @@ glam.workspace = true
 anyhow.workspace = true
 log.workspace = true
 faer.workspace = true
+serde.workspace = true

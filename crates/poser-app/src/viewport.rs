@@ -176,6 +176,10 @@ impl PoserApp {
             )
         });
         let alt_nav = self.opts.emulate_3button && mods.alt;
+        if self.rig.is_some() {
+            self.rig_pointer(view, pointer, latest, pressed && !alt_nav && resp.contains_pointer(), down, released);
+            return;
+        }
         if self.drag.is_none() {
             if let Some(p) = pointer {
                 let ring = if self.tool == Tool::Pose && self.opts.show_rings { self.ring_set(view).and_then(|r| r.hit(view, p)) } else { None };
@@ -204,6 +208,75 @@ impl PoserApp {
         }
         if released && self.drag.take().is_some() {
             self.pending_undo_done = false;
+        }
+    }
+
+    fn rig_world(&self) -> Option<poser_core::glam::Mat4> {
+        let r = self.rig.as_ref()?;
+        let fig = self.scene.figures.get(self.scene.index_of(r.figure_id)?)?;
+        Some(self.cache.figs.get(&fig.id)?.world)
+    }
+
+    fn rig_pointer(&mut self, view: &ViewCtx, pointer: Option<Pos2>, latest: Option<Pos2>, pressed: bool, down: bool, released: bool) {
+        let Some(w) = self.rig_world() else { return };
+        let Some(r) = self.rig.as_mut() else { return };
+        if r.drag.is_none() {
+            r.hover = pointer.and_then(|p| {
+                (0..8)
+                    .filter_map(|i| view.project(w.transform_point3(r.markers.get(i))).map(|s| (i, (s - p).length())))
+                    .filter(|(_, d)| *d < 12.0)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|x| x.0)
+            });
+            if pressed {
+                r.drag = r.hover;
+            }
+        }
+        if let (Some(i), true, Some(p)) = (r.drag, down, latest) {
+            let cur = w.transform_point3(r.markers.get(i));
+            let np = w.inverse().transform_point3(view.drag_point(p, cur));
+            r.markers.set(i, np);
+            if r.symmetric {
+                let cx = (r.markers.chin.x + r.markers.groin.x) * 0.5;
+                r.markers.symmetrize_from(i, cx);
+            }
+        }
+        if released {
+            r.drag = None;
+        }
+    }
+
+    fn draw_rig_markers(&self, painter: &egui::Painter, view: &ViewCtx) {
+        let (Some(r), Some(w)) = (self.rig.as_ref(), self.rig_world()) else { return };
+        let cols = [
+            Color32::from_rgb(255, 210, 60),
+            Color32::from_rgb(80, 200, 255),
+            Color32::from_rgb(255, 110, 110),
+            Color32::from_rgb(80, 200, 255),
+            Color32::from_rgb(255, 110, 110),
+            Color32::from_rgb(80, 200, 255),
+            Color32::from_rgb(255, 110, 110),
+            Color32::from_rgb(170, 255, 120),
+        ];
+        // Preview of the skeleton that will be built.
+        let (sk, _) = poser_rig::skeleton_from_markers(&r.markers);
+        let sw = sk.rest_world();
+        for (i, b) in sk.bones.iter().enumerate() {
+            if let Some(pa) = b.parent {
+                let a = view.project(w.transform_point3(sw[pa].w_axis.truncate()));
+                let c = view.project(w.transform_point3(sw[i].w_axis.truncate()));
+                if let (Some(a), Some(c)) = (a, c) {
+                    painter.line_segment([a, c], Stroke::new(2.0, Color32::from_rgba_unmultiplied(255, 255, 255, 150)));
+                }
+            }
+        }
+        for i in 0..8 {
+            let Some(p) = view.project(w.transform_point3(r.markers.get(i))) else { continue };
+            let hot = r.hover == Some(i) || r.drag == Some(i);
+            let rad = if hot { 9.0 } else { 7.0 };
+            painter.circle_filled(p, rad, cols[i]);
+            painter.circle_stroke(p, rad, Stroke::new(1.5, Color32::BLACK));
+            painter.text(p + egui::vec2(11.0, -9.0), egui::Align2::LEFT_CENTER, poser_rig::MARKER_NAMES[i], egui::FontId::proportional(12.0), Color32::WHITE);
         }
     }
 
@@ -584,6 +657,7 @@ impl PoserApp {
                 painter.add(egui::Shape::dashed_line(&[c, p], Stroke::new(1.0, Color32::WHITE), 6.0, 4.0));
             }
         }
+        self.draw_rig_markers(&painter, view);
         // Navigation gizmo + view label
         gizmo::axis_widget(&painter, self.axis_widget_center(view.rect), &self.cam);
         let proj = match self.cam.projection {

@@ -35,6 +35,17 @@ fn main() {
                 }
                 println!("   missing: {}", missing.join(", "));
                 println!("   morphs {}  animations {}", m.morph_names().len(), m.animations.len());
+                if !m.has_skeleton() {
+                    let t = std::time::Instant::now();
+                    let m = poser_rig::prepare_for_rigging(&m);
+                    println!("   facing {}", poser_rig::facing_sign(&m));
+                    let mk = poser_rig::guess_markers(&m);
+                    println!("   markers: chin {:.2?} lw {:.2?} rw {:.2?} lk {:.2?} groin {:.2?}", mk.chin, mk.left_wrist, mk.right_wrist, mk.left_knee, mk.groin);
+                    match poser_rig::auto_rig(&m, &mk) {
+                        Ok(r) => println!("   auto-rig OK in {:.0} ms: {} bones, humanoid {}", t.elapsed().as_secs_f32() * 1000.0, r.skeleton.len(), r.humanoid.is_valid()),
+                        Err(e) => println!("   auto-rig FAILED: {e:#}"),
+                    }
+                }
                 for a in m.animations.iter().take(5) {
                     println!("     anim '{}' {:.2}s {} channels", a.name, a.duration, a.channels.len());
                 }

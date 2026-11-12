@@ -13,3 +13,6 @@ log.workspace = true
 gltf.workspace = true
 ufbx.workspace = true
 image.workspace = true
+
+[dev-dependencies]
+poser-rig.workspace = true
