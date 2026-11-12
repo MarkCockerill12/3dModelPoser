@@ -143,6 +143,16 @@ pub struct Retarget {
     pub playing: bool,
 }
 
+pub struct RefImage {
+    pub tex: egui::TextureHandle,
+    pub size: egui::Vec2,
+    pub opacity: f32,
+    pub in_front: bool,
+    pub scale: f32,
+    pub offset: egui::Vec2,
+    pub visible: bool,
+}
+
 pub struct ExportSettings {
     pub width: u32,
     pub height: u32,
@@ -202,6 +212,7 @@ pub struct PoserApp {
     /// Free mode: Ctrl+drag a bone moves it instead of rotating.
     pub drag_translate: bool,
     pub ctrl_down: bool,
+    pub ref_image: Option<RefImage>,
 }
 
 impl PoserApp {
@@ -269,6 +280,7 @@ impl PoserApp {
             rig_markers: HashMap::new(),
             drag_translate: false,
             ctrl_down: false,
+            ref_image: None,
         };
         let idx = app.add_human(HumanParams::default(), "Human");
         app.sel = Selection { figure: Some(idx), bone: None };
@@ -1102,6 +1114,21 @@ impl PoserApp {
             Ok(()) => format!("Exported {} mesh(es) to {}", meshes.len(), path.display()),
             Err(e) => format!("Export failed: {e:#}"),
         };
+    }
+
+    pub fn load_ref_image(&mut self, ctx: &egui::Context) {
+        let Some(p) = rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "bmp", "tga"]).pick_file() else { return };
+        match image::open(&p) {
+            Ok(img) => {
+                let img = img.to_rgba8();
+                let (w, h) = img.dimensions();
+                let ci = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &img);
+                let tex = ctx.load_texture("reference", ci, egui::TextureOptions::LINEAR);
+                self.ref_image = Some(RefImage { tex, size: egui::vec2(w as f32, h as f32), opacity: 0.6, in_front: false, scale: 1.0, offset: egui::Vec2::ZERO, visible: true });
+                self.needs_render = true;
+            }
+            Err(e) => self.status = format!("Could not open image: {e}"),
+        }
     }
 
     pub fn save_user_pose(&mut self, name: String) {

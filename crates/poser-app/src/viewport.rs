@@ -99,7 +99,7 @@ impl PoserApp {
                 lights: &self.scene.lights,
                 width: w,
                 height: h,
-                transparent: false,
+                transparent: self.ref_image.as_ref().is_some_and(|r| r.visible && !r.in_front),
                 bounds_center: center,
                 bounds_radius: radius,
             };
@@ -119,8 +119,20 @@ impl PoserApp {
             self.needs_render = false;
             self.last_rendered = Some((self.cam, self.scene.render.clone(), (w, h), self.scene.lights.clone()));
         }
+        let ref_rect = self.ref_image.as_ref().filter(|r| r.visible).map(|r| {
+            let fit = (rect.width() / r.size.x).min(rect.height() / r.size.y) * r.scale;
+            (r.tex.id(), Rect::from_center_size(rect.center() + r.offset, r.size * fit), r.opacity, r.in_front)
+        });
+        let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+        if let Some((id, rr, op, false)) = ref_rect {
+            ui.painter().rect_filled(rect, 0.0, Color32::from_gray(40));
+            ui.painter().image(id, rr, uv, Color32::from_white_alpha((op * 255.0) as u8));
+        }
         if let Some(t) = self.tex {
-            ui.painter().image(t, rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+            ui.painter().image(t, rect, uv, Color32::WHITE);
+        }
+        if let Some((id, rr, op, true)) = ref_rect {
+            ui.painter().image(id, rr, uv, Color32::from_white_alpha((op * 255.0) as u8));
         }
     }
 

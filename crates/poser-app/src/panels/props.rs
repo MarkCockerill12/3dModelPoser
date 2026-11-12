@@ -768,6 +768,31 @@ fn camera_tab(app: &mut PoserApp, ui: &mut egui::Ui) {
         _ => {}
     }
     ui.separator();
+    ui.label(RichText::new("Reference image").strong());
+    let ctx = ui.ctx().clone();
+    ui.horizontal(|ui| {
+        if ui.button("Load image...").clicked() {
+            app.load_ref_image(&ctx);
+        }
+        if app.ref_image.is_some() && ui.button("Remove").clicked() {
+            app.ref_image = None;
+            app.needs_render = true;
+        }
+    });
+    let mut rerender = false;
+    if let Some(r) = app.ref_image.as_mut() {
+        let a = ui.checkbox(&mut r.visible, "Show").changed();
+        let b = ui.checkbox(&mut r.in_front, "In front (trace over the figure)").changed();
+        rerender = a || b;
+        ui.add(Slider::new(&mut r.opacity, 0.05..=1.0).text("Opacity"));
+        ui.add(Slider::new(&mut r.scale, 0.2..=3.0).logarithmic(true).text("Size"));
+        ui.add(Slider::new(&mut r.offset.x, -800.0..=800.0).text("Move X"));
+        ui.add(Slider::new(&mut r.offset.y, -800.0..=800.0).text("Move Y"));
+    }
+    if rerender {
+        app.needs_render = true;
+    }
+    ui.separator();
     ui.label(RichText::new("Saved views").strong());
     if ui.button("+ Save current view").clicked() {
         let n = app.saved_views.len() + 1;
