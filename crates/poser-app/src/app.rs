@@ -154,6 +154,8 @@ pub struct PoserApp {
     pub hand_presets: Vec<HumanPose>,
     pub user_poses: Vec<HumanPose>,
     pub last_time: f64,
+    /// Debug: (output png, frames to wait) for --preset-sheet.
+    pub selftest: Option<(PathBuf, u32)>,
 }
 
 impl PoserApp {
@@ -210,11 +212,17 @@ impl PoserApp {
             hand_presets: presets::hand_presets(),
             user_poses: load_user_poses(),
             last_time: 0.0,
+            selftest: None,
         };
         let idx = app.add_mannequin(MannequinParams::default(), "Mannequin");
         app.sel = Selection { figure: Some(idx), bone: None };
         app.frame_all(false);
-        for a in std::env::args().skip(1) {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if let Some(i) = args.iter().position(|a| a == "--preset-sheet") {
+            app.build_preset_sheet(args.get(i + 1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("presets.png")));
+            return app;
+        }
+        for a in args {
             let p = PathBuf::from(a);
             if p.is_file() {
                 app.import_file(p);
@@ -764,6 +772,78 @@ impl PoserApp {
         self.last_rendered = None;
     }
 
+    /// Debug aid: render every body + hand preset on a mannequin into one contact sheet.
+    pub fn build_preset_sheet(&mut self, out: PathBuf) {
+        self.selftest = Some((out, 3));
+    }
+
+    fn render_preset_sheet(&mut self, out: &std::path::Path) {
+        self.scene.figures.clear();
+        self.pins.clear();
+        let idx = self.add_mannequin(MannequinParams::default(), "Sheet");
+        self.scene.render.show_joints = false;
+        self.sel = Selection::default();
+        let mut poses = self.body_presets.clone();
+        for h in self.hand_presets.clone() {
+            // Hands shown on a figure holding both hands up in front of the face.
+            let mut p = self.body_presets.iter().find(|p| p.name == "T-pose").cloned().unwrap_or_default();
+            p.name = format!("hand {}", h.name);
+            p.rotations.insert(poser_core::humanoid::HumanBone::LeftUpperArm, Quat::from_rotation_arc(Vec3::X, Vec3::new(0.3, -0.2, 0.93).normalize()));
+            p.rotations.insert(poser_core::humanoid::HumanBone::LeftLowerArm, Quat::from_rotation_y(-100f32.to_radians()));
+            p.rotations.insert(poser_core::humanoid::HumanBone::RightUpperArm, Quat::from_rotation_z(80f32.to_radians()));
+            for (b, q) in h.rotations.iter() {
+                p.rotations.insert(*b, *q);
+            }
+            poses.push(p);
+        }
+        let (tw, th) = (360u32, 450u32);
+        let cols = 7u32;
+        let rows = (poses.len() as u32).div_ceil(cols);
+        let mut sheet = image::RgbaImage::new(tw * cols, th * rows);
+        for (i, p) in poses.iter().enumerate() {
+            self.apply_pose_to(idx, p, true);
+            self.cache.update(&self.scene, None, None);
+            let hand = p.name.starts_with("hand ");
+            let (c, r) = self.cache.scene_bounds(&self.scene);
+            self.cam = Camera::default();
+            if hand {
+                self.cam.set_yaw_pitch(40f32.to_radians(), -15f32.to_radians());
+                let fig = &self.scene.figures[idx];
+                let cc = &self.cache.figs[&fig.id];
+                let hb = fig.model.humanoid.get(poser_core::humanoid::HumanBone::LeftHand).unwrap();
+                let hp = cc.world.transform_point3(cc.pose.world[hb].w_axis.truncate());
+                self.cam.frame(hp + Vec3::new(0.0, 0.03, 0.05), 0.12);
+            } else {
+                self.cam.set_yaw_pitch(30f32.to_radians(), -10f32.to_radians());
+                self.cam.frame(c, r * 0.85);
+            }
+            let draws = crate::viewport::build_draws(&self.scene, &self.cache, true);
+            let desc = poser_render::FrameDesc {
+                camera: &self.cam,
+                settings: &self.scene.render,
+                lights: &self.scene.lights,
+                width: tw,
+                height: th,
+                transparent: false,
+                bounds_center: c,
+                bounds_radius: r,
+            };
+            let Some(rd) = self.renderer.as_mut() else { return };
+            rd.render(&desc, &draws);
+            for f in self.cache.figs.values_mut() {
+                f.deform_dirty = false;
+            }
+            if let Some((w, h, px)) = rd.read_output() {
+                if let Some(img) = image::RgbaImage::from_raw(w, h, px) {
+                    let (x, y) = ((i as u32 % cols) * tw, (i as u32 / cols) * th);
+                    image::imageops::overlay(&mut sheet, &img, x as i64, y as i64);
+                }
+            }
+            println!("{:>3}: {}", i, p.name);
+        }
+        let _ = sheet.save(out);
+    }
+
     pub fn save_user_pose(&mut self, name: String) {
         if let Some(mut p) = self.sel.figure.and_then(|f| self.current_human_pose(f)) {
             p.name = name;
@@ -822,6 +902,15 @@ impl eframe::App for PoserApp {
             crate::panels::right_panel(self, ui);
         }
         crate::panels::windows(self, &ctx);
+        if let Some((path, n)) = self.selftest.take() {
+            if n == 0 {
+                self.render_preset_sheet(&path);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                self.selftest = Some((path, n - 1));
+                ctx.request_repaint();
+            }
+        }
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, frame));
     }
 }
