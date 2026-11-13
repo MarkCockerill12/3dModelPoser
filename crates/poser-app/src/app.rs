@@ -273,8 +273,12 @@ pub struct PoserApp {
 
 impl PoserApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        crate::theme::apply(&cc.egui_ctx);
         let renderer = cc.wgpu_render_state.as_ref().map(|rs| Renderer::new(&rs.device, &rs.queue));
+        Self::new_with(&cc.egui_ctx, renderer)
+    }
+
+    pub fn new_with(egui_ctx: &egui::Context, renderer: Option<Renderer>) -> Self {
+        crate::theme::apply(egui_ctx);
         let mut app = Self {
             scene: Scene::default(),
             undo: UndoStack::new(200),
@@ -402,8 +406,11 @@ impl PoserApp {
             let out = PathBuf::from(&args[i + 2]);
             let (tx, rx) = channel();
             let img = image::open(&input).expect("photo").to_rgb8();
-            let (w, h) = img.dimensions();
-            let _ = tx.send(poser_ai::estimate(&img).map(|k| (k, w, h)));
+            let r = crate::photo::estimate_photo(&img);
+            if let Ok((_, hands, _, _)) = &r {
+                println!("hands: {hands:?}");
+            }
+            let _ = tx.send(r);
             app.photo_job = Some(crate::photo::PhotoJob { figure_id: app.scene.figures[0].id, path: input, rx });
             app.export_after = Some((out, 8));
             app.export.transparent = false;
@@ -1135,12 +1142,64 @@ impl PoserApp {
         self.last_rendered = None;
     }
 
+    /// Debug / test jobs (photo test, prop turntable, preset sheet). Some(true) when finished,
+    /// Some(false) while waiting a few frames, None when there is nothing to do.
+    fn debug_jobs(&mut self) -> Option<bool> {
+        if let Some((path, n)) = self.export_after.take() {
+            if n > 0 {
+                self.export_after = Some((path, n - 1));
+                return Some(false);
+            }
+            // Side-by-side: front with photo, plus a 3/4 view to judge depth.
+            self.inset = Some({
+                let mut c = self.cam;
+                c.set_yaw_pitch(60f32.to_radians(), -10f32.to_radians());
+                c
+            });
+            self.export_image(path);
+            return Some(true);
+        }
+        if let Some((path, n)) = self.turntable_after.take() {
+            if n > 0 {
+                self.turntable_after = Some((path, n - 1));
+                return Some(false);
+            }
+            self.frame_all(false);
+            self.cam_anim = None;
+            self.cam.set_yaw_pitch(0.0, -12f32.to_radians());
+            self.export_turntable(path, 8, false);
+            return Some(true);
+        }
+        if let Some((path, n)) = self.selftest.take() {
+            if n > 0 {
+                self.selftest = Some((path, n - 1));
+                return Some(false);
+            }
+            self.render_preset_sheet(&path);
+            return Some(true);
+        }
+        None
+    }
+
+    /// Run the debug jobs without a window (see main.rs).
+    pub fn run_headless(&mut self, ctx: &egui::Context) {
+        for _ in 0..500 {
+            self.poll_photo(ctx);
+            self.sync_attachments();
+            self.cache.update(&self.scene, None, None);
+            match self.debug_jobs() {
+                Some(false) => std::thread::sleep(std::time::Duration::from_millis(5)),
+                _ => return,
+            }
+        }
+    }
+
     /// Debug aid: render every body + hand preset on a mannequin into one contact sheet.
     pub fn build_preset_sheet(&mut self, out: PathBuf) {
         self.selftest = Some((out, 3));
     }
 
-    fn render_preset_sheet(&mut self, out: &std::path::Path) {
+    pub fn render_preset_sheet(&mut self, out: &std::path::Path) {
         self.scene.figures.clear();
         self.pins.clear();
         let idx = match self.sheet_model.clone() {
@@ -1532,41 +1591,10 @@ impl eframe::App for PoserApp {
             crate::panels::right_panel(self, ui);
         }
         crate::panels::windows(self, &ctx);
-        if let Some((path, n)) = self.export_after.take() {
-            if n == 0 {
-                // Side-by-side: front with photo, plus a 3/4 view to judge depth.
-                self.inset = Some({
-                    let mut c = self.cam;
-                    c.set_yaw_pitch(60f32.to_radians(), -10f32.to_radians());
-                    c
-                });
-                self.export_image(path);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            } else {
-                self.export_after = Some((path, n - 1));
-                ctx.request_repaint();
-            }
-        }
-        if let Some((path, n)) = self.turntable_after.take() {
-            if n == 0 {
-                self.frame_all(false);
-                self.cam_anim = None;
-                self.cam.set_yaw_pitch(0.0, -12f32.to_radians());
-                self.export_turntable(path, 8, false);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            } else {
-                self.turntable_after = Some((path, n - 1));
-                ctx.request_repaint();
-            }
-        }
-        if let Some((path, n)) = self.selftest.take() {
-            if n == 0 {
-                self.render_preset_sheet(&path);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            } else {
-                self.selftest = Some((path, n - 1));
-                ctx.request_repaint();
-            }
+        match self.debug_jobs() {
+            Some(true) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Some(false) => ctx.request_repaint(),
+            None => {}
         }
         self.sync_attachments();
         self.update_look_at();

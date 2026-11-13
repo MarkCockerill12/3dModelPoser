@@ -6,7 +6,7 @@ import, auto-rig and pose your own characters.
 
 Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well on integrated graphics.
 
-**Status:** v0.5 (preview). Windows build on the [Releases](https://github.com/MarkCockerill12/3dModelPoser/releases) page.
+**Status:** v0.6 (preview). Windows build on the [Releases](https://github.com/MarkCockerill12/3dModelPoser/releases) page.
 
 ## Features
 - **Realistic default body** built from MakeHuman's CC0 assets: one continuous anatomical body (not segments) with
@@ -32,6 +32,11 @@ Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well o
   - Drag hands/feet to reach with IK, drag fingers to curl them, drag the hips with feet kept planted.
   - **Body and floor collision** (Guided mode): hands and feet slide over the body instead of passing through it,
     and nothing goes through the floor. Arms and legs use an anatomical IK that picks a natural elbow/knee direction.
+  - **Linked joints** (Guided mode): rotating a joint past its range carries on into the next joint up, like real
+    anatomy: twisting the hand rolls the forearm, bending it further lifts the forearm and then the upper arm; the
+    same for foot, shin and thigh, and head and neck.
+  - **Right-click** a body part for a menu (reset joint or limb, copy to the other side, pin, look at camera, drop to
+    floor...); **[ / ]** select the parent / child joint; the status bar explains what dragging the hovered part does.
   - **Live symmetry**: pose one side and the other mirrors it. **Look at camera**: head and eyes follow the view.
   - Pins, joint-stress highlighting, mirror / flip, copy & paste poses, drop to floor.
   - Volume-preserving (dual-quaternion) skinning keeps shoulders, elbows and wrists from collapsing.
@@ -41,7 +46,8 @@ Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well o
   sword, staff, bat, book, phone, cup). Hand-held props snap into a hand with the fingers curled round them, and any
   object can be attached to a figure's hand, head, chest, hips or feet so it follows the pose.
 - **Pose from photo**: load a photo and the pose of the person is estimated offline (RTMPose, nothing is uploaded)
-  and applied to your figure, with the photo shown behind it.
+  and applied to your figure, with the photo shown behind it. **Hands are detected too** (21 points per hand), so the
+  finger curl, spread and thumb follow the photo.
 - **Hands**: per-finger curl, spread and thumb-opposition sliders plus 15 hand presets.
 - **Library** with thumbnails: 17 full-body presets that work on *any* humanoid, plus your own saved poses. Poses are
   checked against the joint limits and the figure is grounded automatically; a *Strength* slider blends a pose with

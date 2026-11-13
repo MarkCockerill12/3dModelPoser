@@ -413,6 +413,8 @@ pub fn windows(app: &mut PoserApp, ctx: &egui::Context) {
                     ("Drag body part", "IK pose: hands/feet reach, elbows/knees swing, hips move"),
                     ("Drag a ring", "Rotate the joint around that axis (white = view)"),
                     ("W / E or R / S", "Move / rotate / scale gizmo (Godot & Blender style)"),
+                    ("Right-click (no drag)", "Joint / figure menu: reset, mirror, pin, look at camera..."),
+                    ("[ / ]", "Select the parent / child joint"),
                     ("Edit parts (Body tab)", "Click pieces (Shift adds), G grow, Delete removes, Esc done"),
                     ("R again / S again / G", "Free rotate / scale / grab (Blender modal)"),
                     ("Drag the axis widget", "Orbit to any angle (click a bubble to snap)"),

@@ -224,6 +224,8 @@ impl PoserApp {
                 Key::Num0 if !ctrl => self.frame_selected(),
                 Key::Home => self.frame_all(true),
                 Key::Period => self.frame_selected(),
+                Key::OpenBracket => self.step_joint(false),
+                Key::CloseBracket => self.step_joint(true),
                 Key::F if !ctrl => self.frame_selected(),
                 Key::N if !ctrl => self.show_right = !self.show_right,
                 Key::T if !ctrl => self.show_left = !self.show_left,
@@ -475,7 +477,7 @@ impl PoserApp {
                             self.clamp_bone(m.figure, b);
                         } else {
                             // Single axis: stays on that axis, stopping at the joint limit.
-                            self.rotate_on_axis(m.figure, &[b], (fig_rot.inverse() * axis).normalize(), angle);
+                            self.rotate_linked(m.figure, b, (fig_rot.inverse() * axis).normalize(), angle);
                             self.mirror_live(m.figure, b);
                         }
                         self.solve_pins(m.figure, Some(b));

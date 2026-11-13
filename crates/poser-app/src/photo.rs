@@ -10,7 +10,18 @@ use std::sync::mpsc::{Receiver, channel};
 pub struct PhotoJob {
     pub figure_id: u64,
     pub path: PathBuf,
-    pub rx: Receiver<anyhow::Result<(Vec<Keypoint>, u32, u32)>>,
+    pub rx: Receiver<anyhow::Result<PhotoResult>>,
+}
+
+/// Body keypoints, both hands (person's left, right) and the image size.
+pub type PhotoResult = (Vec<Keypoint>, [Option<poser_ai::HandShape>; 2], u32, u32);
+
+/// Run body + hand estimation on an image (on a worker thread).
+pub fn estimate_photo(rgb: &image::RgbImage) -> anyhow::Result<PhotoResult> {
+    let (w, h) = rgb.dimensions();
+    let k = poser_ai::estimate(rgb)?;
+    let hands = poser_ai::estimate_hands(rgb, &k);
+    Ok((k, hands, w, h))
 }
 
 fn frame(x: Vec3, y: Vec3) -> Quat {
@@ -96,11 +107,7 @@ impl PoserApp {
         let (tx, rx) = channel();
         let p2 = path.clone();
         std::thread::spawn(move || {
-            let r = image::open(&p2).map_err(anyhow::Error::from).and_then(|img| {
-                let rgb = img.to_rgb8();
-                let (w, h) = rgb.dimensions();
-                poser_ai::estimate(&rgb).map(|k| (k, w, h))
-            });
+            let r = image::open(&p2).map_err(anyhow::Error::from).and_then(|img| estimate_photo(&img.to_rgb8()));
             let _ = tx.send(r);
         });
         self.photo_job = Some(PhotoJob { figure_id: self.scene.figures[f].id, path, rx });
@@ -113,7 +120,7 @@ impl PoserApp {
         let Ok(res) = job.rx.try_recv() else { return };
         let job = self.photo_job.take().unwrap();
         let Some(idx) = self.scene.index_of(job.figure_id) else { return };
-        let (kps, _w, _h) = match res {
+        let (kps, hands, _w, _h) = match res {
             Ok(x) => x,
             Err(e) => {
                 self.status = format!("Pose from photo failed: {e:#}");
@@ -193,11 +200,28 @@ impl PoserApp {
                 hp.rotations.insert(*h, (parent_n(*h).inverse() * *q).normalize());
             }
         }
-        // Keep the current fingers.
+        // Fingers: from the detected hands, else keep the current ones.
         let cur = extract_human_pose(&m.skeleton, &m.humanoid, &fig.pose.locals);
-        for (b, q) in cur.rotations {
-            if b.is_finger() {
-                hp.rotations.insert(b, q);
+        let mut found = 0;
+        for (i, side) in [poser_core::humanoid::Side::Left, poser_core::humanoid::Side::Right].into_iter().enumerate() {
+            match hands[i] {
+                Some(hs) => {
+                    found += 1;
+                    let shape = crate::presets::hand_shape("photo", hs.curl, hs.spread, hs.opposition);
+                    let shape = if side == poser_core::humanoid::Side::Left { shape } else { shape.mirrored() };
+                    for (b, q) in shape.rotations {
+                        if b.is_finger() && b.side() == side {
+                            hp.rotations.insert(b, q);
+                        }
+                    }
+                }
+                None => {
+                    for (b, q) in cur.rotations.iter() {
+                        if b.is_finger() && b.side() == side {
+                            hp.rotations.insert(*b, *q);
+                        }
+                    }
+                }
             }
         }
         self.push_undo("Pose from photo");
@@ -212,7 +236,11 @@ impl PoserApp {
         }
         let now = self.last_time;
         self.set_view(poser_core::camera::ViewAxis::Front, now);
-        self.status = format!("Pose estimated from {} ({} of 17 keypoints confident). Depth is a best guess: refine with the rings.", job.path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(), good);
+        self.status = format!(
+            "Pose estimated from {} ({} of 17 body points confident, {found} of 2 hands). Depth is a best guess: refine with the rings.",
+            job.path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+            good
+        );
         self.needs_render = true;
     }
 }

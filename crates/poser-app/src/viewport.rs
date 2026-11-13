@@ -82,6 +82,9 @@ impl PoserApp {
             ui.ctx().request_repaint();
         }
         let view = ViewCtx { cam: self.cam, rect };
+        if !modal && self.rig.is_none() && self.armature.is_none() && self.parts.is_none() {
+            self.joint_context_menu(&resp, &view);
+        }
         let sel = self.sel.figure.map(|f| (f, self.sel.bone));
         let changed = self.cache.update(&self.scene, sel, self.hover);
         self.render_viewport(ui, frame, rect, changed);
@@ -333,6 +336,9 @@ impl PoserApp {
                     self.hover_ring = ring;
                     self.hover_handle = handle;
                     self.hover = hover;
+                    if let Some(h) = self.hover_hint().filter(|_| self.drag.is_none() && self.modal.is_none()) {
+                        self.status = h;
+                    }
                     self.needs_render = true;
                 }
             } else if self.hover.is_some() || self.hover_ring.is_some() || self.hover_handle.is_some() {
@@ -604,7 +610,7 @@ impl PoserApp {
             (H::LeftFoot, Vec3::new(0.0, -0.3, 0.2)),
         ];
         // Ring rotation check: each axis step must rotate the bone about that axis only.
-        for hb in [H::LeftUpperArm, H::LeftLowerArm, H::LeftUpperLeg, H::Chest, H::Neck] {
+        for hb in [H::LeftHand, H::LeftUpperArm, H::LeftLowerArm, H::LeftFoot, H::LeftUpperLeg, H::Chest, H::Neck] {
             let Some(b) = self.scene.figures[f].model.humanoid.get(hb) else { continue };
             for ring in 0..3 {
                 self.scene.figures[f].pose.locals = base.clone();
@@ -622,7 +628,11 @@ impl PoserApp {
                 let ax = axes[ring];
                 let mut total = 0.0;
                 for _ in 0..40 {
-                    self.rotate_on_axis(f, &[b], ax, 0.03);
+                    if std::env::var_os("POSER_LINK").is_some() {
+                        self.rotate_linked(f, b, ax, 0.03);
+                    } else {
+                        self.rotate_on_axis(f, &[b], ax, 0.03);
+                    }
                     total += 0.03;
                 }
                 let w1 = sk.evaluate(&self.scene.figures[f].pose.locals, None).world;
@@ -676,7 +686,42 @@ impl PoserApp {
 
     /// Rotate `bones` (split evenly) about one model-space axis, and nothing else: in Guided mode
     /// the rotation stops at the joint limit instead of being clamped sideways onto other axes.
-    pub(crate) fn rotate_on_axis(&mut self, f: usize, bones: &[usize], axis: Vec3, phi: f32) {
+    /// Rotate a joint about one axis like a real limb: whatever the joint can't do (past its
+    /// limit) carries on into the next joint up the chain - turning the hand further rolls the
+    /// forearm (pronation), bending it further lifts the forearm, then the upper arm; the same
+    /// for foot -> shin -> thigh and head -> neck. The child keeps its pose relative to the
+    /// parent, so the limb moves as one piece.
+    pub(crate) fn rotate_linked(&mut self, f: usize, bone: usize, axis: Vec3, phi: f32) {
+        let mut b = bone;
+        let mut rest = phi;
+        for _ in 0..3 {
+            let done = self.rotate_on_axis(f, &[b], axis, rest);
+            rest *= 1.0 - done;
+            if !self.guided() || rest.abs() < 1e-4 {
+                break;
+            }
+            let hm = &self.scene.figures[f].model.humanoid;
+            let next = match hm.human_of(b) {
+                Some(H::LeftHand) => H::LeftLowerArm,
+                Some(H::RightHand) => H::RightLowerArm,
+                Some(H::LeftLowerArm) => H::LeftUpperArm,
+                Some(H::RightLowerArm) => H::RightUpperArm,
+                Some(H::LeftFoot) => H::LeftLowerLeg,
+                Some(H::RightFoot) => H::RightLowerLeg,
+                Some(H::LeftLowerLeg) => H::LeftUpperLeg,
+                Some(H::RightLowerLeg) => H::RightUpperLeg,
+                Some(H::Head) => H::Neck,
+                _ => break,
+            };
+            match hm.get(next) {
+                Some(p) => b = p,
+                None => break,
+            }
+        }
+    }
+
+    /// Returns the fraction of `phi` that was applied.
+    pub(crate) fn rotate_on_axis(&mut self, f: usize, bones: &[usize], axis: Vec3, phi: f32) -> f32 {
         let model = self.scene.figures[f].model.clone();
         let sk = &model.skeleton;
         let before: Vec<_> = bones.iter().map(|b| self.scene.figures[f].pose.locals[*b]).collect();
@@ -698,7 +743,7 @@ impl PoserApp {
         };
         apply(self, 1.0);
         if ok(self) {
-            return;
+            return 1.0;
         }
         // Find how far along this axis we can go before leaving the limits.
         let (mut lo, mut hi) = (0.0f32, 1.0f32);
@@ -708,6 +753,7 @@ impl PoserApp {
             if ok(self) { lo = mid } else { hi = mid }
         }
         apply(self, lo);
+        lo
     }
 
     /// One IK drag step from the drag's start pose: solve, then (Guided) push the limb out of
@@ -874,7 +920,7 @@ impl PoserApp {
                 } else if phi.abs() > 1e-6 {
                     self.ensure_undo("Rotate bone");
                     let ax = (self.scene.figures[f].transform.rotation.inverse() * axis_world).normalize();
-                    self.rotate_on_axis(f, &[b], ax, phi);
+                    self.rotate_linked(f, b, ax, phi);
                     self.mirror_live(f, b);
                     // The arm keeps exactly the turn you asked for; the shoulder girdle follows it.
                     self.shoulder_rhythm(f);
