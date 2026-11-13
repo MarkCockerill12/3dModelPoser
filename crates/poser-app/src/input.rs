@@ -22,6 +22,22 @@ impl PoserApp {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
+        if self.parts.is_some() {
+            let key = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, k));
+            if key(Key::Delete) || key(Key::X) || key(Key::Backspace) {
+                self.delete_selected_parts();
+            }
+            if key(Key::Escape) || key(Key::Enter) {
+                self.end_parts();
+            }
+            if key(Key::G) {
+                self.grow_parts();
+            }
+            if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Z)) {
+                self.undo();
+            }
+            return;
+        }
         let cmd = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, k));
         let cmd_shift = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, k));
         if cmd_shift(Key::Z) || cmd(Key::Y) {

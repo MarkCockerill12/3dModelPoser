@@ -185,7 +185,7 @@ impl HumanBone {
 
     /// Default joint limits in degrees, normalised frame (see [`JointLimit`]).
     pub fn default_limit(self) -> Option<JointLimit> {
-        let l = |x: (f32, f32), y: (f32, f32), z: (f32, f32)| JointLimit { x, y, z, twist: 0 };
+        let l = |x: (f32, f32), y: (f32, f32), z: (f32, f32)| JointLimit { x, y, z, twist: 0, twist_follow: 0.0 };
         let left = match self.side() {
             Side::Right => self.mirror(),
             _ => self,
@@ -199,10 +199,11 @@ impl HumanBone {
             H::LeftEye => l((-25.0, 25.0), (-35.0, 35.0), (-1.0, 1.0)),
             H::Jaw => l((-2.0, 35.0), (-8.0, 8.0), (-5.0, 5.0)),
             H::LeftShoulder => l((-20.0, 20.0), (-25.0, 20.0), (-15.0, 35.0)),
-            H::LeftUpperArm => l((-80.0, 80.0), (-120.0, 45.0), (-95.0, 110.0)),
+            // y+ = backwards; generous so a hanging arm can swing back ~55 deg (the cone is elliptical).
+            H::LeftUpperArm => l((-80.0, 80.0), (-120.0, 70.0), (-95.0, 110.0)),
             H::LeftLowerArm => l((-85.0, 85.0), (-150.0, 5.0), (-6.0, 6.0)),
             H::LeftHand => l((-25.0, 25.0), (-35.0, 35.0), (-85.0, 75.0)),
-            H::LeftUpperLeg => l((-125.0, 35.0), (-50.0, 50.0), (-35.0, 75.0)),
+            H::LeftUpperLeg => l((-125.0, 35.0), (-60.0, 60.0), (-35.0, 75.0)),
             H::LeftLowerLeg => l((-2.0, 150.0), (-8.0, 8.0), (-4.0, 4.0)),
             H::LeftFoot => l((-35.0, 55.0), (-30.0, 30.0), (-30.0, 30.0)),
             H::LeftToes => l((-60.0, 35.0), (-5.0, 5.0), (-5.0, 5.0)),
@@ -227,7 +228,11 @@ impl HumanBone {
             Some(_) => 2,
             None => 2, // feet, toes, eyes, jaw point forward
         };
-        let lim = JointLimit { twist, ..lim };
+        let follow = match self {
+            H::LeftUpperArm | H::RightUpperArm | H::LeftUpperLeg | H::RightUpperLeg => 0.9,
+            _ => 0.0,
+        };
+        let lim = JointLimit { twist, twist_follow: follow, ..lim };
         Some(if self.side() == Side::Right { lim.mirrored() } else { lim })
     }
 }
@@ -265,20 +270,33 @@ pub struct JointLimit {
     pub z: (f32, f32),
     #[serde(default)]
     pub twist: u8,
+    /// Ball joints: extra twist allowed per degree of swing. Swing-twist splitting reports
+    /// "twist" for large swings that is really just where the limb points (Codman's paradox),
+    /// so a fixed twist range would wrongly untwist e.g. cross-legged thighs.
+    #[serde(default)]
+    pub twist_follow: f32,
 }
 
 impl JointLimit {
     /// Mirror across the YZ plane: Y and Z rotations change sign.
     pub fn mirrored(&self) -> Self {
-        Self { x: self.x, y: (-self.y.1, -self.y.0), z: (-self.z.1, -self.z.0), twist: self.twist }
+        Self { x: self.x, y: (-self.y.1, -self.y.0), z: (-self.z.1, -self.z.0), twist: self.twist, twist_follow: self.twist_follow }
     }
 
     fn range(&self, i: usize) -> (f32, f32) {
         [self.x, self.y, self.z][i]
     }
 
+    /// Twist range for a given swing (rotation-vector components, degrees).
+    fn twist_range(&self, sv: &[f32; 3]) -> (f32, f32) {
+        let r = self.range(self.twist as usize);
+        let swing = (sv[0] * sv[0] + sv[1] * sv[1] + sv[2] * sv[2]).sqrt();
+        let extra = swing * self.twist_follow;
+        (r.0 - extra, r.1 + extra)
+    }
+
     /// (twist degrees, swing rotation-vector components in degrees on the two other axes).
-    fn decompose(&self, q: Quat) -> (f32, [f32; 3]) {
+    pub fn decompose(&self, q: Quat) -> (f32, [f32; 3]) {
         let q = if q.w < 0.0 { -q } else { q };
         let t = self.twist as usize;
         let axis = [Vec3::X, Vec3::Y, Vec3::Z][t];
@@ -296,7 +314,7 @@ impl JointLimit {
     pub fn clamp(&self, q: Quat) -> Quat {
         let t = self.twist as usize;
         let (tw, sv) = self.decompose(q);
-        let tr = self.range(t);
+        let tr = self.twist_range(&sv);
         let tw = tw.clamp(tr.0, tr.1);
         // Elliptical swing cone with asymmetric bounds.
         let others: Vec<usize> = (0..3).filter(|i| *i != t).collect();
@@ -329,7 +347,7 @@ impl JointLimit {
     pub fn stress(&self, q: Quat) -> f32 {
         let t = self.twist as usize;
         let (tw, sv) = self.decompose(q);
-        let tr = self.range(t);
+        let tr = self.twist_range(&sv);
         let mid = (tr.0 + tr.1) * 0.5;
         let ts = ((tw - mid).abs() / ((tr.1 - tr.0).max(1.0) * 0.5)).clamp(0.0, 1.5);
         let mut e = 0.0f32;

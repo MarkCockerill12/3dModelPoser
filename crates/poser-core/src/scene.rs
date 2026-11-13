@@ -33,6 +33,15 @@ pub struct Attachment {
     pub offset: Transform,
 }
 
+/// A recorded "delete parts" edit: (mesh, island) pairs as found by `edit::mesh_islands`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PartEdit {
+    pub islands: Vec<(usize, u32)>,
+    /// Made after auto-rigging (re-applied after the rig when a scene is loaded).
+    #[serde(default)]
+    pub after_rig: bool,
+}
+
 /// A model instance in the scene (character or prop).
 #[derive(Clone, Debug)]
 pub struct Figure {
@@ -51,6 +60,8 @@ pub struct Figure {
     pub tint: Option<Vec4>,
     pub anim: Option<AnimState>,
     pub attachment: Option<Attachment>,
+    /// Pieces deleted from the model, in order (so scenes can redo them on load).
+    pub part_edits: Vec<PartEdit>,
     /// Bumped whenever something that affects deformation changes.
     pub revision: u64,
     /// Generator parameters for procedural figures (serialised JSON), so they can be rebuilt.
@@ -80,6 +91,7 @@ impl Figure {
             tint: None,
             anim: None,
             attachment: None,
+            part_edits: vec![],
             revision: next_revision(),
             procedural: None,
         }

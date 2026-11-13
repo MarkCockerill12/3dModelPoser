@@ -246,6 +246,46 @@ impl PoserApp {
         true
     }
 
+    // ---- Library poses ----------------------------------------------------------------------
+
+    /// Lowest point of a figure's skin (world y), after bringing its deformation up to date.
+    fn lowest_point(&mut self, f: usize) -> Option<f32> {
+        self.cache.update(&self.scene, None, None);
+        let fig = self.scene.figures.get(f)?;
+        let c = self.cache.figs.get(&fig.id)?;
+        let low = c.meshes.iter().flat_map(|m| m.positions.iter()).map(|p| c.world.transform_point3(*p).y).fold(f32::MAX, f32::min);
+        (low < f32::MAX).then_some(low)
+    }
+
+    /// Apply a library / pasted pose so it works on any body: in Guided mode it is settled
+    /// (joint limits, shoulder rhythm), then the figure is moved
+    /// so it rests on whatever it stood on before (floor, box...) - or hovers for jumps.
+    pub fn apply_library_pose(&mut self, f: usize, pose: &poser_core::pose::HumanPose) {
+        let Some(fig) = self.scene.figures.get(f) else { return };
+        let id = fig.id;
+        let attached = fig.attachment.is_some();
+        let support = if attached { None } else { self.lowest_point(f).map(|l| l - self.pose_lift.get(&id).copied().unwrap_or(0.0)) };
+        self.apply_pose_to(f, pose, true);
+        if self.guided() && self.scene.figures[f].model.humanoid.is_valid() {
+            let hm = self.scene.figures[f].model.humanoid.clone();
+            for b in 0..self.scene.figures[f].model.skeleton.len() {
+                if hm.human_of(b).is_some() {
+                    self.clamp_bone(f, b);
+                }
+            }
+            self.shoulder_rhythm(f);
+        }
+        let Some(support) = support else { return };
+        let Some(low) = self.lowest_point(f) else { return };
+        let fig = &self.scene.figures[f];
+        let scale = fig.transform.scale.y.abs().max(1e-6);
+        let lift = pose.lift * fig.model.humanoid.hips_height * scale;
+        self.scene.figures[f].transform.translation.y += support + lift - low;
+        self.pose_lift.insert(id, lift);
+        self.scene.figures[f].touch();
+        self.needs_render = true;
+    }
+
     // ---- Floor ----------------------------------------------------------------------------
 
     /// Move a figure up or down so its lowest point rests on the floor.
@@ -265,6 +305,8 @@ impl PoserApp {
             return;
         }
         self.push_undo("Drop to floor");
+        let id = self.scene.figures[f].id;
+        self.pose_lift.remove(&id);
         self.scene.figures[f].transform.translation.y -= low;
         self.needs_render = true;
         self.status = "Dropped to the floor".into();

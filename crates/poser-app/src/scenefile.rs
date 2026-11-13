@@ -35,6 +35,8 @@ pub struct FigureFile {
     /// (index of the parent figure in this file, bone, offset).
     #[serde(default)]
     pub attach: Option<(usize, usize, Transform)>,
+    #[serde(default)]
+    pub part_edits: Vec<poser_core::scene::PartEdit>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -91,6 +93,7 @@ impl PoserApp {
                 tint: f.tint,
                 pins: self.pins.keys().filter(|(id, _)| *id == f.id).map(|(_, b)| *b).collect(),
                 attach: None,
+                part_edits: f.part_edits.clone(),
             });
             saved_ids.push(f.id);
         }
@@ -148,10 +151,12 @@ impl PoserApp {
                     let p = if p.is_file() { p.clone() } else { base.join(p.file_name().unwrap_or_default()) };
                     match poser_io::load_model(&p) {
                         Ok(mut m) => {
+                            m = crate::parts::apply_part_edits(m, &ff.part_edits, false);
                             if let Some(mk) = rig {
                                 let prep = poser_rig::prepare_for_rigging(&m);
                                 m = poser_rig::auto_rig(&prep, mk)?;
                                 m.path = Some(p.clone());
+                                m = crate::parts::apply_part_edits(m, &ff.part_edits, true);
                             }
                             (Arc::new(m), None, *rig)
                         }
@@ -163,9 +168,16 @@ impl PoserApp {
                     }
                 }
             };
+            let model = match &ff.source {
+                // Generated figures: re-apply deletions to the rebuilt geometry.
+                FigureSource::File { .. } => model,
+                _ if !ff.part_edits.is_empty() => Arc::new(crate::parts::apply_part_edits((*model).clone(), &ff.part_edits, false)),
+                _ => model,
+            };
             let idx = self.scene.add_model(model.clone());
             let fig = &mut self.scene.figures[idx];
             fig.name = ff.name;
+            fig.part_edits = ff.part_edits.clone();
             fig.transform = ff.transform;
             if ff.locals.len() == model.skeleton.len() {
                 fig.pose.locals = ff.locals;

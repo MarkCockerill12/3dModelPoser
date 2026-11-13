@@ -476,6 +476,62 @@ fn attach_ui(app: &mut PoserApp, ui: &mut egui::Ui, f: usize) {
     }
 }
 
+/// "Model parts": delete pieces of a model (briefcase, hat...) by clicking them.
+fn parts_ui(app: &mut PoserApp, ui: &mut egui::Ui, f: usize) {
+    let id = app.scene.figures[f].id;
+    let active = app.parts.as_ref().is_some_and(|s| s.figure_id == id);
+    egui::CollapsingHeader::new(RichText::new("Model parts").strong()).id_salt("parts").default_open(active).show(ui, |ui| {
+        if !active {
+            ui.label(RichText::new("Remove pieces you don't want, like a briefcase or hat.").weak());
+            if ui.button("Edit parts...").on_hover_text("Click pieces in the viewport to select them, then Delete").clicked() {
+                app.start_parts(f);
+            }
+        } else {
+            let (by_mesh, nsel, pieces) = {
+                let s = app.parts.as_ref().unwrap();
+                (s.by_mesh, s.selected.len(), s.piece_count())
+            };
+            ui.horizontal(|ui| {
+                ui.label("Click selects");
+                let mut m = by_mesh;
+                ui.selectable_value(&mut m, false, "Pieces").on_hover_text("Separate connected pieces");
+                ui.selectable_value(&mut m, true, "Whole meshes").on_hover_text("Everything with the same mesh / material");
+                if let Some(s) = app.parts.as_mut() {
+                    s.by_mesh = m;
+                }
+            });
+            ui.label(RichText::new(format!("{nsel} of {pieces} pieces selected. Shift+click adds.")).weak());
+            ui.horizontal(|ui| {
+                if ui.add_enabled(nsel > 0, egui::Button::new("Grow (G)")).on_hover_text("Also select every piece inside the selection's bounds (handles, latches...)").clicked() {
+                    app.grow_parts();
+                }
+                if ui.add_enabled(nsel > 0, egui::Button::new("Delete (Del)")).clicked() {
+                    app.delete_selected_parts();
+                }
+                if ui.button("Done").clicked() {
+                    app.end_parts();
+                }
+            });
+            ui.label(RichText::new("Meshes").weak());
+            let names: Vec<(usize, String, usize)> = app.scene.figures[f].model.meshes.iter().enumerate().map(|(i, m)| (i, m.name.clone(), m.triangle_count())).collect();
+            egui::ScrollArea::vertical().id_salt("partlist").max_height(160.0).show(ui, |ui| {
+                for (i, name, tris) in names {
+                    let label = if name.is_empty() { format!("Mesh {i}") } else { name };
+                    let sel = app.mesh_selected(i);
+                    if ui.add(egui::Button::selectable(sel, format!("{label}  ({tris} tris)")).truncate()).clicked() {
+                        app.toggle_mesh_selection(i);
+                    }
+                }
+            });
+        }
+        let n = app.scene.figures[f].part_edits.len();
+        if n > 0 {
+            ui.label(RichText::new(format!("{n} deletion{} on this model (Ctrl+Z undoes)", if n == 1 { "" } else { "s" })).weak());
+        }
+    });
+    ui.separator();
+}
+
 fn hands_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
     let Some(f) = app.sel.figure.filter(|f| app.scene.figures.get(*f).is_some_and(|x| x.model.humanoid.is_valid())) else {
         ui.label("Select a humanoid figure.");
@@ -552,6 +608,7 @@ fn body_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
         ui.label("Select a figure.");
         return;
     };
+    parts_ui(app, ui, f);
     let id = app.scene.figures[f].id;
     if let Some(mut p) = app.humans.get(&id).cloned() {
         use poser_core::makehuman::{HumanParams, age_to_years, years_to_age};
@@ -832,7 +889,7 @@ fn library_tab(app: &mut PoserApp, ui: &mut egui::Ui) {
                 }
             }
         }
-        app.apply_pose_to(f, &full, true);
+        app.apply_library_pose(f, &full);
         app.status = format!("Applied pose \"{}\"", full.name);
     }
 }

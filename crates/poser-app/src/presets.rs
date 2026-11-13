@@ -36,6 +36,29 @@ fn knee(d: f32) -> Quat {
     rx(d)
 }
 
+
+/// Upper-bone rotation and joint bend (degrees) that make a limb's upper segment point along
+/// `upper` and its lower segment along `lower`. `u0` is the bone's T-pose direction and `s0`
+/// the side the lower segment swings to when the joint bends, so the bend always happens on
+/// the real hinge (no sideways elbows or knees).
+fn bend(u0: Vec3, s0: Vec3, upper: Vec3, lower: Vec3) -> (Quat, f32) {
+    let d1 = upper.normalize();
+    let f1 = lower.normalize();
+    let arc = Quat::from_rotation_arc(u0, d1);
+    let mut s1 = f1 - d1 * f1.dot(d1);
+    if s1.length() < 1e-3 {
+        s1 = arc * s0;
+    }
+    let s1 = s1.normalize();
+    let frame = |u: Vec3, s: Vec3| poser_core::glam::Mat3::from_cols(u, s, u.cross(s));
+    let q = Quat::from_mat3(&(frame(d1, s1) * frame(u0, s0).transpose())).normalize();
+    (q, d1.dot(f1).clamp(-1.0, 1.0).acos().to_degrees())
+}
+
+fn flip_x(v: Vec3) -> Vec3 {
+    Vec3::new(-v.x, v.y, v.z)
+}
+
 struct PB(HumanPose);
 
 impl PB {
@@ -66,6 +89,36 @@ impl PB {
                 self.0.rotations.insert(b, q);
             }
         }
+        self
+    }
+    /// Left arm by segment directions (upper arm, forearm); world axes, +X = the figure's left.
+    fn larm(self, upper: Vec3, lower: Vec3) -> Self {
+        let (q, a) = bend(Vec3::X, Vec3::Z, upper, lower);
+        self.set(H::LeftUpperArm, q).set(H::LeftLowerArm, elbow(a))
+    }
+    /// Right arm by segment directions in world axes (-X = the figure's right).
+    fn rarm(self, upper: Vec3, lower: Vec3) -> Self {
+        let (q, a) = bend(Vec3::X, Vec3::Z, flip_x(upper), flip_x(lower));
+        self.right(H::LeftUpperArm, q).right(H::LeftLowerArm, elbow(a))
+    }
+    /// Both arms, right mirrored from the left.
+    fn arms(self, upper: Vec3, lower: Vec3) -> Self {
+        self.larm(upper, lower).rarm(flip_x(upper), flip_x(lower))
+    }
+    fn lleg(self, thigh: Vec3, shin: Vec3) -> Self {
+        let (q, a) = bend(Vec3::NEG_Y, Vec3::NEG_Z, thigh, shin);
+        self.set(H::LeftUpperLeg, q).set(H::LeftLowerLeg, knee(a))
+    }
+    fn rleg(self, thigh: Vec3, shin: Vec3) -> Self {
+        let (q, a) = bend(Vec3::NEG_Y, Vec3::NEG_Z, flip_x(thigh), flip_x(shin));
+        self.right(H::LeftUpperLeg, q).right(H::LeftLowerLeg, knee(a))
+    }
+    fn legs(self, thigh: Vec3, shin: Vec3) -> Self {
+        self.lleg(thigh, shin).rleg(flip_x(thigh), flip_x(shin))
+    }
+    /// Mid-air pose: lowest point this many hips-heights above the ground.
+    fn lift(mut self, h: f32) -> Self {
+        self.0.lift = h;
         self
     }
     fn done(self) -> HumanPose {
@@ -164,64 +217,54 @@ pub fn body_presets() -> Vec<HumanPose> {
             .hand(Side::Right, &relaxed)
             .done(),
         PB::new("Running", "Motion")
-            .hips(Vec3::new(0.0, -0.06, 0.0), rx(10.0) * ry(-8.0))
-            .set(H::Spine, rx(6.0))
-            .set(H::Chest, ry(14.0))
-            .set(H::Head, rx(-12.0))
-            .set(H::LeftUpperLeg, leg(Vec3::new(0.04, -0.55, 0.83), 0.0))
-            .set(H::LeftLowerLeg, knee(95.0))
-            .set(H::LeftFoot, rx(10.0))
-            .right(H::LeftUpperLeg, leg(Vec3::new(0.03, -0.86, -0.5), 0.0))
-            .right(H::LeftLowerLeg, knee(65.0))
-            .right(H::LeftFoot, rx(30.0))
-            .set(H::LeftUpperArm, arm(Vec3::new(0.2, -0.8, -0.55), -40.0))
-            .set(H::LeftLowerArm, elbow(85.0))
-            .right(H::LeftUpperArm, arm(Vec3::new(0.2, -0.75, 0.6), -40.0))
-            .right(H::LeftLowerArm, elbow(95.0))
+            .hips(Vec3::new(0.0, 0.0, 0.0), rx(12.0) * ry(-10.0))
+            .set(H::Spine, rx(4.0))
+            .set(H::Chest, ry(16.0))
+            .set(H::Head, rx(-14.0))
+            .lleg(Vec3::new(0.05, -0.55, 0.83), Vec3::new(0.0, -0.95, -0.3))
+            .set(H::LeftFoot, rx(5.0))
+            .rleg(Vec3::new(-0.04, -0.9, -0.42), Vec3::new(-0.02, -0.35, -0.94))
+            .right(H::LeftFoot, rx(35.0))
+            .larm(Vec3::new(0.16, -0.85, -0.5), Vec3::new(0.05, -0.3, 0.95))
+            .rarm(Vec3::new(-0.12, -0.72, 0.68), Vec3::new(-0.12, 0.55, 0.83))
             .hand(Side::Left, &fist)
             .hand(Side::Right, &fist)
+            .lift(0.08)
             .done(),
         PB::new("Sitting (chair)", "Sitting")
             .hips(Vec3::new(0.0, -0.46, -0.08), rx(-4.0))
             .set(H::Spine, rx(4.0))
-            .sym(H::LeftUpperLeg, leg(Vec3::new(0.1, -0.05, 1.0), 0.0))
-            .sym(H::LeftLowerLeg, knee(88.0))
-            .sym(H::LeftUpperArm, arm(Vec3::new(0.18, -0.9, 0.35), -20.0))
-            .sym(H::LeftLowerArm, elbow(55.0))
+            .legs(Vec3::new(0.12, -0.08, 1.0), Vec3::new(0.04, -1.0, 0.05))
+            .arms(Vec3::new(0.18, -0.92, 0.3), Vec3::new(0.02, -0.35, 0.94))
             .hand(Side::Left, &relaxed)
             .hand(Side::Right, &relaxed)
             .done(),
         PB::new("Sitting cross-legged", "Sitting")
-            .hips(Vec3::new(0.0, -0.84, -0.05), rx(-6.0))
+            .hips(Vec3::new(0.0, -0.84, -0.05), rx(-8.0))
             .set(H::Spine, rx(10.0))
-            .set(H::Chest, rx(4.0))
-            .sym(H::LeftUpperLeg, leg(Vec3::new(0.75, -0.08, 0.65), 40.0))
-            .sym(H::LeftLowerLeg, knee(140.0))
-            .sym(H::LeftUpperArm, arm(Vec3::new(0.3, -0.85, 0.3), -20.0))
-            .sym(H::LeftLowerArm, elbow(40.0))
+            .set(H::Chest, rx(6.0))
+            .lleg(Vec3::new(0.72, -0.25, 0.65), Vec3::new(-0.85, -0.12, 0.5))
+            .rleg(Vec3::new(-0.75, -0.2, 0.62), Vec3::new(0.93, -0.05, 0.22))
+            .sym(H::LeftFoot, rx(20.0))
+            .arms(Vec3::new(0.25, -0.82, 0.5), Vec3::new(0.3, -0.45, 0.84))
             .hand(Side::Left, &relaxed)
             .hand(Side::Right, &relaxed)
             .done(),
         PB::new("Kneeling", "Sitting")
             .hips(Vec3::new(0.0, -0.47, 0.0), rx(0.0))
-            .sym(H::LeftUpperLeg, leg(Vec3::new(0.06, -1.0, 0.05), 0.0))
-            .sym(H::LeftLowerLeg, knee(92.0))
+            .legs(Vec3::new(0.06, -1.0, 0.04), Vec3::new(0.02, -0.08, -1.0))
             .sym(H::LeftFoot, rx(45.0))
-            .sym(H::LeftUpperArm, arm(Vec3::new(0.15, -1.0, 0.1), 0.0))
-            .sym(H::LeftLowerArm, elbow(20.0))
+            .arms(Vec3::new(0.15, -1.0, 0.1), Vec3::new(0.1, -0.95, 0.3))
             .hand(Side::Left, &relaxed)
             .hand(Side::Right, &relaxed)
             .done(),
         PB::new("One knee down", "Sitting")
             .hips(Vec3::new(0.0, -0.45, 0.0), ry(0.0))
-            .set(H::LeftUpperLeg, leg(Vec3::new(0.08, -0.08, 1.0), 0.0))
-            .set(H::LeftLowerLeg, knee(90.0))
-            .right(H::LeftUpperLeg, leg(Vec3::new(0.05, -1.0, -0.1), 0.0))
-            .right(H::LeftLowerLeg, knee(90.0))
-            .right(H::LeftFoot, rx(40.0))
-            .set(H::LeftUpperArm, arm(Vec3::new(0.25, -0.8, 0.5), -30.0))
-            .set(H::LeftLowerArm, elbow(50.0))
-            .right(H::LeftUpperArm, arm(Vec3::new(0.15, -1.0, 0.0), 0.0))
+            .lleg(Vec3::new(0.1, -0.12, 1.0), Vec3::new(0.04, -1.0, 0.02))
+            .rleg(Vec3::new(-0.06, -1.0, -0.12), Vec3::new(-0.02, -0.06, -1.0))
+            .right(H::LeftFoot, rx(45.0))
+            .larm(Vec3::new(0.25, -0.75, 0.6), Vec3::new(0.1, -0.5, 0.86))
+            .rarm(Vec3::new(-0.15, -1.0, 0.0), Vec3::new(-0.1, -0.98, 0.15))
             .hand(Side::Left, &relaxed)
             .hand(Side::Right, &relaxed)
             .done(),
@@ -229,46 +272,40 @@ pub fn body_presets() -> Vec<HumanPose> {
             .hips(Vec3::new(0.0, -0.56, -0.1), rx(20.0))
             .set(H::Spine, rx(12.0))
             .set(H::Head, rx(-20.0))
-            .sym(H::LeftUpperLeg, leg(Vec3::new(0.3, -0.25, 0.9), 0.0))
-            .sym(H::LeftLowerLeg, knee(135.0))
-            .sym(H::LeftFoot, rx(-25.0))
-            .sym(H::LeftUpperArm, arm(Vec3::new(0.25, -0.6, 0.75), -30.0))
-            .sym(H::LeftLowerArm, elbow(25.0))
+            .legs(Vec3::new(0.2, -0.2, 0.96), Vec3::new(-0.02, -0.8, -0.6))
+            .sym(H::LeftFoot, rx(-20.0))
+            .arms(Vec3::new(0.22, -0.55, 0.8), Vec3::new(0.1, -0.9, 0.4))
             .hand(Side::Left, &relaxed)
             .hand(Side::Right, &relaxed)
             .done(),
         PB::new("Jumping", "Motion")
-            .hips(Vec3::new(0.0, 0.35, 0.0), rx(-6.0))
+            .hips(Vec3::new(0.0, 0.0, 0.0), rx(-4.0))
             .set(H::Spine, rx(-6.0))
-            .set(H::LeftUpperLeg, leg(Vec3::new(0.1, -0.75, 0.6), 0.0))
-            .set(H::LeftLowerLeg, knee(110.0))
-            .right(H::LeftUpperLeg, leg(Vec3::new(0.06, -0.95, 0.15), 0.0))
-            .right(H::LeftLowerLeg, knee(80.0))
-            .sym(H::LeftFoot, rx(30.0))
-            .sym(H::LeftUpperArm, arm(Vec3::new(0.45, 0.88, 0.1), 0.0))
-            .sym(H::LeftLowerArm, elbow(15.0))
+            .set(H::Chest, rx(-4.0))
+            .set(H::Head, rx(-10.0))
+            .lleg(Vec3::new(0.1, -0.85, 0.5), Vec3::new(0.02, -0.75, -0.66))
+            .rleg(Vec3::new(-0.06, -0.97, -0.2), Vec3::new(-0.03, -0.6, -0.8))
+            .sym(H::LeftFoot, rx(35.0))
+            .arms(Vec3::new(0.5, 0.85, 0.15), Vec3::new(0.35, 0.92, 0.15))
             .hand(Side::Left, &hand_presets()[2])
             .hand(Side::Right, &hand_presets()[2])
+            .lift(0.35)
             .done(),
         PB::new("Fighting stance", "Action")
             .hips(Vec3::new(0.0, -0.08, 0.0), ry(-28.0))
             .set(H::Chest, ry(-8.0))
             .set(H::Head, ry(30.0) * rx(8.0))
-            .set(H::LeftUpperLeg, leg(Vec3::new(0.2, -0.95, 0.25), 0.0))
-            .set(H::LeftLowerLeg, knee(25.0))
-            .right(H::LeftUpperLeg, leg(Vec3::new(0.12, -0.95, -0.25), 0.0))
-            .right(H::LeftLowerLeg, knee(30.0))
-            .sym(H::LeftUpperArm, arm(Vec3::new(0.35, -0.6, 0.72), -60.0))
-            .sym(H::LeftLowerArm, elbow(125.0))
+            .lleg(Vec3::new(0.2, -0.95, 0.25), Vec3::new(0.1, -0.97, -0.2))
+            .rleg(Vec3::new(-0.12, -0.95, -0.25), Vec3::new(-0.05, -0.92, -0.38))
+            .larm(Vec3::new(0.3, -0.55, 0.78), Vec3::new(-0.15, 0.7, 0.7))
+            .rarm(Vec3::new(-0.35, -0.8, 0.45), Vec3::new(0.25, 0.8, 0.55))
             .hand(Side::Left, &fist)
             .hand(Side::Right, &fist)
             .done(),
         PB::new("Waving", "Gesture")
             .sym(H::LeftUpperLeg, leg(Vec3::new(0.04, -1.0, 0.0), 0.0))
-            .set(H::LeftUpperArm, arm(Vec3::new(0.15, -1.0, 0.05), 0.0))
-            .set(H::LeftLowerArm, elbow(10.0))
-            .right(H::LeftUpperArm, arm(Vec3::new(0.95, 0.3, 0.1), -90.0))
-            .right(H::LeftLowerArm, elbow(95.0))
+            .larm(Vec3::new(0.15, -1.0, 0.05), Vec3::new(0.1, -0.98, 0.15))
+            .rarm(Vec3::new(-0.95, 0.25, 0.15), Vec3::new(-0.15, 0.98, 0.1))
             .set(H::Head, rz(6.0))
             .hand(Side::Left, &relaxed)
             .hand(Side::Right, &hand_presets()[1])
@@ -277,8 +314,7 @@ pub fn body_presets() -> Vec<HumanPose> {
             .set(H::Spine, rx(-6.0))
             .set(H::Chest, rx(-6.0))
             .set(H::Head, rx(-25.0))
-            .sym(H::LeftUpperArm, arm(Vec3::new(0.2, 1.0, 0.12), 0.0))
-            .sym(H::LeftLowerArm, elbow(5.0))
+            .arms(Vec3::new(0.2, 1.0, 0.12), Vec3::new(0.18, 1.0, 0.14))
             .sym(H::LeftFoot, rx(25.0))
             .hips(Vec3::new(0.0, 0.04, 0.0), Quat::IDENTITY)
             .hand(Side::Left, &hand_presets()[2])
@@ -295,15 +331,13 @@ pub fn body_presets() -> Vec<HumanPose> {
         PB::new("Hero landing", "Action")
             .hips(Vec3::new(0.0, -0.6, 0.0), rx(25.0))
             .set(H::Spine, rx(15.0))
-            .set(H::Head, rx(-30.0))
-            .set(H::LeftUpperLeg, leg(Vec3::new(0.25, -0.3, 0.9), 0.0))
-            .set(H::LeftLowerLeg, knee(130.0))
-            .right(H::LeftUpperLeg, leg(Vec3::new(0.15, -0.9, -0.4), 0.0))
-            .right(H::LeftLowerLeg, knee(120.0))
+            .set(H::Chest, rx(5.0))
+            .set(H::Head, rx(-35.0))
+            .lleg(Vec3::new(0.28, -0.35, 0.9), Vec3::new(0.06, -0.95, -0.25))
+            .rleg(Vec3::new(-0.12, -0.9, -0.42), Vec3::new(-0.04, -0.1, -1.0))
             .right(H::LeftFoot, rx(45.0))
-            .set(H::LeftUpperArm, arm(Vec3::new(0.7, -0.4, -0.55), 0.0))
-            .right(H::LeftUpperArm, arm(Vec3::new(0.1, -0.85, 0.5), -30.0))
-            .right(H::LeftLowerArm, elbow(20.0))
+            .larm(Vec3::new(0.75, -0.1, -0.65), Vec3::new(0.7, 0.05, -0.7))
+            .rarm(Vec3::new(-0.12, -0.95, 0.3), Vec3::new(-0.05, -1.0, 0.05))
             .hand(Side::Left, &hand_presets()[2])
             .hand(Side::Right, &fist)
             .done(),
@@ -314,4 +348,26 @@ pub fn body_presets() -> Vec<HumanPose> {
         }
     }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Built-in poses must already be anatomically possible (Guided mode never has to bend them).
+    #[test]
+    fn presets_within_joint_limits() {
+        let mut bad = vec![];
+        for p in body_presets().into_iter().chain(hand_presets()) {
+            for (b, q) in &p.rotations {
+                let Some(l) = b.default_limit() else { continue };
+                let d = q.angle_between(l.clamp(*q)).to_degrees();
+                if d > 2.0 {
+                    bad.push(format!("{}: {b:?} off by {d:.0} deg {:?} {:?}", p.name, l.decompose(*q), l));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("
+"));
+    }
 }

@@ -570,6 +570,44 @@ pub fn auto_rig(model: &Model, markers: &Markers) -> Result<Model> {
 
 /// Bind any skeleton (rest = identity rotations at joint positions) to a model with bone-heat
 /// weights. Bones named *Tip / HeadTop are treated as non-deforming end markers.
+/// Heat diffuses across where trouser legs / thighs touch, so inner-thigh skin ends up following
+/// both legs and webs together when a knee bends. Below the crotch, skin on one side of the body
+/// midline may not be driven by the other leg's bones.
+fn separate_legs(weights: &mut [([u16; 4], [f32; 4])], pos: &[Vec3], skel: &Skeleton, map: &HumanoidMap) {
+    let (Some(l), Some(r), Some(hips)) = (map.get(H::LeftUpperLeg), map.get(H::RightUpperLeg), map.get(H::Hips)) else { return };
+    let world = skel.rest_world();
+    let p = |b: usize| world[b].w_axis.truncate();
+    let (pl, pr) = (p(l), p(r));
+    let mid_x = (pl.x + pr.x) * 0.5;
+    let left_sign = (pl.x - mid_x).signum();
+    let crotch_y = pl.y.min(pr.y).min(p(hips).y);
+    let gap = (pl.x - pr.x).abs() * 0.04;
+    let in_leg = |root: usize, b: usize| b == root || skel.is_ancestor(root, b);
+    for (i, (j, w)) in weights.iter_mut().enumerate() {
+        let v = pos[i];
+        if v.y > crotch_y || (v.x - mid_x).abs() < gap {
+            continue;
+        }
+        let other = if (v.x - mid_x) * left_sign > 0.0 { r } else { l };
+        let own = if other == r { l } else { r };
+        let mut total = 0.0;
+        for k in 0..4 {
+            if w[k] > 0.0 && in_leg(other, j[k] as usize) {
+                w[k] = 0.0;
+            }
+            total += w[k];
+        }
+        if total > 1e-6 {
+            for x in w.iter_mut() {
+                *x /= total;
+            }
+        } else {
+            *j = [own as u16, 0, 0, 0];
+            *w = [1.0, 0.0, 0.0, 0.0];
+        }
+    }
+}
+
 pub fn bind_skeleton(model: &Model, skel: Skeleton, mut map: HumanoidMap) -> Result<Model> {
     let mut out = model.clone();
     // Bring every mesh into model space at rest (drops any previous rig).
@@ -622,7 +660,8 @@ pub fn bind_skeleton(model: &Model, skel: Skeleton, mut map: HumanoidMap) -> Res
             Some((c, r))
         })
         .collect();
-    let weights = heat_weights(&all, &alln, &tris, &skel, &deform, &region)?;
+    let mut weights = heat_weights(&all, &alln, &tris, &skel, &deform, &region)?;
+    separate_legs(&mut weights, &all, &skel, &map);
     for (mi, m) in out.meshes.iter_mut().enumerate() {
         let o = offsets[mi];
         m.joints = (0..m.positions.len()).map(|i| weights[o + i].0).collect();

@@ -313,6 +313,11 @@ impl PoserApp {
             self.rig_pointer(view, pointer, latest, pressed && !alt_nav && resp.contains_pointer(), down, released);
             return;
         }
+        if self.parts.is_some() {
+            let p = if resp.contains_pointer() { pointer } else { None };
+            self.parts_pointer(view, p, pressed && !alt_nav && resp.contains_pointer(), mods.shift);
+            return;
+        }
         if self.drag.is_none() {
             if let Some(p) = pointer {
                 let gizmo_on = self.tool == Tool::Pose && self.sel.figure.is_some();

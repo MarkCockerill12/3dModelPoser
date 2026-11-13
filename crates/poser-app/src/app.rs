@@ -255,6 +255,10 @@ pub struct PoserApp {
     pub attach_sync: HashMap<u64, poser_core::transform::Transform>,
     /// Debug: (output, frames to wait) for --prop-test (turntable of a prop scene).
     pub turntable_after: Option<(PathBuf, u32)>,
+    /// Height (world units) the figure was lifted off its support by the last library pose.
+    pub pose_lift: HashMap<u64, f32>,
+    /// Edit-parts tool session.
+    pub parts: Option<crate::parts::PartsSession>,
 }
 
 impl PoserApp {
@@ -340,6 +344,8 @@ impl PoserApp {
             props: HashMap::new(),
             attach_sync: HashMap::new(),
             turntable_after: None,
+            pose_lift: HashMap::new(),
+            parts: None,
         };
         let idx = app.add_human(HumanParams::default(), "Human");
         app.sel = Selection { figure: Some(idx), bone: None };
@@ -504,6 +510,8 @@ impl PoserApp {
         let model = Arc::new(makehuman::build(&params));
         let fig = &mut self.scene.figures[idx];
         fig.pose = Pose::tpose(&model.skeleton, &model.humanoid);
+        // New geometry: earlier part deletions no longer apply.
+        fig.part_edits.clear();
         fig.model = model;
         self.apply_human_shapes(idx, &params);
         self.humans.insert(id, params);
@@ -706,7 +714,7 @@ impl PoserApp {
         let (Some(f), Some(p)) = (self.sel.figure, self.clipboard.clone()) else { return };
         self.push_undo("Paste pose");
         let p = if flipped { p.mirrored() } else { p };
-        self.apply_pose_to(f, &p, true);
+        self.apply_library_pose(f, &p);
         self.status = "Pose pasted".into();
     }
 
@@ -1144,6 +1152,21 @@ impl PoserApp {
                 self.add_human(hp, "Sheet")
             }
         };
+        // Debug: POSER_PARTS_MESH=n selects mesh n, grows the selection and deletes it.
+        if let Some(n) = std::env::var("POSER_PARTS_MESH").ok().and_then(|v| v.parse::<usize>().ok()) {
+            self.cache.update(&self.scene, None, None);
+            let before = (self.scene.figures[idx].model.meshes.len(), self.scene.figures[idx].model.triangle_count());
+            self.start_parts(idx);
+            self.toggle_mesh_selection(n);
+            let a = self.parts.as_ref().map(|s| s.selected.len()).unwrap_or(0);
+            self.grow_parts();
+            let g = self.parts.as_ref().map(|s| s.selected.clone()).unwrap_or_default();
+            let meshes: std::collections::BTreeSet<usize> = g.iter().map(|u| u.0).collect();
+            self.delete_selected_parts();
+            self.end_parts();
+            let after = (self.scene.figures[idx].model.meshes.len(), self.scene.figures[idx].model.triangle_count());
+            println!("parts: mesh {n} -> {a} pieces, grow -> {} pieces in meshes {meshes:?}; meshes/tris {before:?} -> {after:?}", g.len());
+        }
         let has_fingers = self.scene.figures[idx].model.humanoid.get(poser_core::humanoid::HumanBone::LeftIndexProximal).is_some();
         self.scene.render.show_joints = false;
         self.sel = Selection::default();
@@ -1161,12 +1184,20 @@ impl PoserApp {
             }
             poses.push(p);
         }
-        let (tw, th) = if drag_test { (560u32, 700u32) } else { (360u32, 450u32) };
-        let cols = if drag_test { 4u32 } else { 7u32 };
+        if let Ok(only) = std::env::var("POSER_ONLY") {
+            poses.retain(|p| only.split(',').any(|o| p.name.to_lowercase().contains(&o.to_lowercase())));
+        }
+        let big = drag_test || std::env::var_os("POSER_BIG").is_some();
+        let (tw, th) = if big { (560u32, 700u32) } else { (360u32, 450u32) };
+        let cols = if big { 4u32 } else { 7u32 };
         let rows = (poses.len() as u32).div_ceil(cols);
         let mut sheet = image::RgbaImage::new(tw * cols, th * rows);
         for (i, p) in poses.iter().enumerate() {
-            self.apply_pose_to(idx, p, true);
+            if p.name.starts_with("hand ") || drag_test {
+                self.apply_pose_to(idx, p, true);
+            } else {
+                self.apply_library_pose(idx, p);
+            }
             self.cache.update(&self.scene, None, None);
             let hand = p.name.starts_with("hand ");
             let (c, r) = self.cache.scene_bounds(&self.scene);
@@ -1179,8 +1210,9 @@ impl PoserApp {
                 let hp = cc.world.transform_point3(cc.pose.world[hb].w_axis.truncate());
                 self.cam.frame(hp + Vec3::new(0.0, 0.03, 0.05), 0.12);
             } else {
-                self.cam.set_yaw_pitch(30f32.to_radians(), -10f32.to_radians());
-                self.cam.frame(c, r * if drag_test { 0.62 } else { 0.85 });
+                let yaw = std::env::var("POSER_YAW").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(30.0);
+                self.cam.set_yaw_pitch(yaw.to_radians(), -10f32.to_radians());
+                self.cam.frame(c, r * if big { 0.62 } else { 0.85 });
                 // Debug: POSER_FOCUS=yaw_degrees frames the left shoulder/arm close up.
                 if let Some(yaw) = std::env::var("POSER_FOCUS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|_| drag_test) {
                     let fig = &self.scene.figures[idx];

@@ -2,6 +2,7 @@
 pub mod animation;
 pub mod camera;
 pub mod collision;
+pub mod edit;
 pub mod humanoid;
 pub mod ik;
 pub mod makehuman;

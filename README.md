@@ -32,13 +32,17 @@ Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well o
     and nothing goes through the floor. Arms and legs use an anatomical IK that picks a natural elbow/knee direction.
   - Pins, joint-stress highlighting, mirror / flip, copy & paste poses, drop to floor.
   - Volume-preserving (dual-quaternion) skinning keeps shoulders, elbows and wrists from collapsing.
+- **Edit parts**: delete pieces of an imported model (a briefcase, hat or stray prop) by clicking them, by whole
+  mesh, or with *Grow* to grab everything inside the selection (handles, latches). Undoable and saved in scenes.
 - **Props**: 18 built-in props (cube, block, ball, pillar, cone, chair, stool, table, bench, stairs, wall, ramp,
   sword, staff, bat, book, phone, cup). Hand-held props snap into a hand with the fingers curled round them, and any
   object can be attached to a figure's hand, head, chest, hips or feet so it follows the pose.
 - **Pose from photo**: load a photo and the pose of the person is estimated offline (RTMPose, nothing is uploaded)
   and applied to your figure, with the photo shown behind it.
 - **Hands**: per-finger curl, spread and thumb-opposition sliders plus 15 hand presets.
-- **Library** with thumbnails: 17 full-body presets that work on *any* humanoid, plus your own saved poses.
+- **Library** with thumbnails: 17 full-body presets that work on *any* humanoid, plus your own saved poses. Poses are
+  checked against the joint limits and the figure is grounded automatically (kneeling, sitting and lying poses rest
+  on whatever the figure stood on; jumps hover).
 - **Animation**: play/scrub clips from imported files, freeze any frame, and **retarget** animations from other files
   (e.g. Mixamo FBX) onto any humanoid.
 - **Rendering for artists**: clay, textured, toon, form, silhouette and x-ray shading; outlines; shadows; up to 4 lights

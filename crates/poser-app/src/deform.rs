@@ -14,6 +14,7 @@ pub struct FigureCache {
     pub meshes: Vec<DeformedMesh>,
     pub overlays: Vec<Vec<Vec4>>,
     pub overlay_key: (Option<usize>, Option<usize>, bool),
+    pub highlight_rev: u64,
     pub overlay_dirty: bool,
     pub deform_dirty: bool,
     pub center: Vec3,
@@ -23,6 +24,9 @@ pub struct FigureCache {
 #[derive(Default)]
 pub struct DeformCache {
     pub figs: HashMap<u64, FigureCache>,
+    /// Extra per-vertex highlights (edit-parts tool): figure id -> (mesh, vertices, colour).
+    pub highlight: HashMap<u64, Vec<(usize, Vec<u32>, Vec4)>>,
+    pub highlight_rev: u64,
 }
 
 fn rigid_matrix(mesh: &Mesh, pose: &PoseMatrices, root: Mat4) -> Mat4 {
@@ -125,8 +129,9 @@ impl DeformCache {
             let hov_bone = hovered.filter(|h| h.0 == i).and_then(|h| h.1);
             let fig_selected = selected.is_some_and(|s| s.0 == i);
             let key = (sel_bone, hov_bone, fig_selected);
-            if c.overlay_key != key || c.overlays.len() != f.model.meshes.len() {
+            if c.overlay_key != key || c.overlays.len() != f.model.meshes.len() || c.highlight_rev != self.highlight_rev {
                 c.overlay_key = key;
+                c.highlight_rev = self.highlight_rev;
                 c.overlays.clear();
                 // Helper bones (face, twist, toes) light up with their main joint.
                 let group_of = |b: usize| -> Vec<bool> {
@@ -174,6 +179,15 @@ impl DeformCache {
                         }
                     }
                     c.overlays.push(ov);
+                }
+                for (m, verts, col) in self.highlight.get(&f.id).map(|v| v.as_slice()).unwrap_or(&[]) {
+                    if let Some(ov) = c.overlays.get_mut(*m) {
+                        for v in verts {
+                            if let Some(o) = ov.get_mut(*v as usize) {
+                                *o = *col;
+                            }
+                        }
+                    }
                 }
                 c.overlay_dirty = true;
                 changed = true;

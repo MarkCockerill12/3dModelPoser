@@ -17,6 +17,9 @@ pub struct HumanPose {
     /// Hips displacement from the T-pose position, in units of hips height (model space).
     #[serde(default)]
     pub hips_offset: Option<Vec3>,
+    /// Mid-air poses (jumps): height of the lowest point above the ground, in hips heights.
+    #[serde(default)]
+    pub lift: f32,
 }
 
 fn mirror_quat(q: Quat) -> Quat {
