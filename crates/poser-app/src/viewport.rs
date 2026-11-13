@@ -545,6 +545,10 @@ impl PoserApp {
     /// the real IK path and return the resulting poses for a contact sheet.
     pub fn drag_test_poses(&mut self, f: usize) -> Vec<poser_core::pose::HumanPose> {
         let base = self.scene.figures[f].pose.locals.clone();
+        if std::env::var_os("POSER_NOCOL").is_some() {
+            self.opts.collisions = false;
+            self.opts.floor = false;
+        }
         let tests: &[(H, Vec3)] = &[
             (H::LeftHand, Vec3::new(0.0, 0.7, 0.0)),
             (H::LeftHand, Vec3::new(-0.3, 0.2, 0.6)),
@@ -562,6 +566,14 @@ impl PoserApp {
             (H::Head, Vec3::new(0.0, -0.3, 0.4)),
             (H::Chest, Vec3::new(0.3, -0.2, 0.3)),
             (H::Hips, Vec3::new(0.0, -0.4, 0.0)),
+            // Collision cases: through the chest, through the other leg, through the floor.
+            (H::LeftHand, Vec3::new(-0.45, 0.45, -0.05)),
+            (H::LeftHand, Vec3::new(-0.35, 0.1, 0.0)),
+            (H::LeftHand, Vec3::new(-0.3, 0.38, 0.0)),
+            (H::LeftHand, Vec3::new(-0.28, 0.2, -0.04)),
+            (H::LeftHand, Vec3::new(-0.3, 0.75, -0.05)),
+            (H::LeftFoot, Vec3::new(-0.45, 0.15, 0.0)),
+            (H::LeftFoot, Vec3::new(0.0, -0.3, 0.2)),
         ];
         // Ring rotation check: each axis step must rotate the bone about that axis only.
         for hb in [H::LeftUpperArm, H::LeftLowerArm, H::LeftUpperLeg, H::Chest, H::Neck] {
@@ -595,17 +607,20 @@ impl PoserApp {
         for (hb, off) in tests {
             self.scene.figures[f].pose.locals = base.clone();
             self.scene.figures[f].touch();
+            let start = base.clone();
             self.cache.update(&self.scene, None, None);
             let Some(bone) = self.scene.figures[f].model.humanoid.get(*hb) else { continue };
             let Some(Drag::Ik { kind, effector, start_target, .. }) = self.begin_ik(f, bone, Vec3::ZERO) else { continue };
             // Step the drag like the mouse does, re-solving from the start pose each frame.
             for k in 1..=20 {
-                self.scene.figures[f].pose.locals = base.clone();
-                self.apply_ik(f, &kind, effector, start_target + *off * (k as f32 / 20.0));
+                self.solve_drag(f, &kind, effector, start_target + *off * (k as f32 / 20.0), &start);
             }
             let fig = &self.scene.figures[f];
             let mut p = poser_core::pose::extract_human_pose(&fig.model.skeleton, &fig.model.humanoid, &fig.pose.locals);
             p.name = format!("{hb:?} {off:?}");
+            let pen = Self::collision_root(&kind).map(|r| self.raw_penetration(f, r)).unwrap_or((0.0, 0));
+            let reached = (self.scene.figures[f].evaluate().world[effector].w_axis.truncate() - (start_target + *off)).length();
+            println!("drag {hb:?} {off:?}: penetration {:.3} m ({} contacts), miss {reached:.3} m", pen.0, pen.1);
             out.push(p);
         }
         self.scene.figures[f].pose.locals = base;
@@ -621,6 +636,9 @@ impl PoserApp {
         let before: Vec<_> = bones.iter().map(|b| self.scene.figures[f].pose.locals[*b]).collect();
         let worst = |app: &Self| bones.iter().map(|b| app.limit_violation(f, *b)).fold(0.0f32, f32::max);
         let v0 = worst(self);
+        let root = bones[0];
+        let p0 = self.penetration(f, root);
+        let ok = |app: &mut Self| worst(app) <= v0 + 1e-3 && app.penetration(f, root) <= p0 + 1e-4;
         let apply = |app: &mut Self, t: f32| {
             let fig = &mut app.scene.figures[f];
             for (b, l) in bones.iter().zip(&before) {
@@ -633,7 +651,7 @@ impl PoserApp {
             }
         };
         apply(self, 1.0);
-        if worst(self) <= v0 + 1e-3 {
+        if ok(self) {
             return;
         }
         // Find how far along this axis we can go before leaving the limits.
@@ -641,9 +659,21 @@ impl PoserApp {
         for _ in 0..10 {
             let mid = (lo + hi) * 0.5;
             apply(self, mid);
-            if worst(self) <= v0 + 1e-3 { lo = mid } else { hi = mid }
+            if ok(self) { lo = mid } else { hi = mid }
         }
         apply(self, lo);
+    }
+
+    /// One IK drag step from the drag's start pose: solve, then (Guided) push the limb out of
+    /// the body and floor so it slides along instead of passing through.
+    fn solve_drag(&mut self, f: usize, kind: &IkKind, effector: usize, target: Vec3, start: &[poser_core::Transform]) {
+        self.scene.figures[f].pose.locals = start.to_vec();
+        let root = Self::collision_root(kind);
+        let base = root.map(|r| self.contact_baseline(f, r)).unwrap_or_default();
+        self.apply_ik(f, kind, effector, target);
+        if let Some(r) = root {
+            self.resolve_collisions(f, r, &base);
+        }
     }
 
     fn ensure_undo(&mut self, label: &str) {
@@ -799,8 +829,7 @@ impl PoserApp {
                 let target = start_target + c.world.inverse().transform_vector3(dw);
                 self.ensure_undo("Pose");
                 // Re-solve from the pose at the start of the drag (smooth + reversible).
-                self.scene.figures[figure].pose.locals = start.clone();
-                self.apply_ik(figure, &kind, effector, target);
+                self.solve_drag(figure, &kind, effector, target, &start);
                 self.scene.figures[figure].touch();
                 self.stop_anim(figure);
                 self.drag = Some(Drag::Ik { figure, kind, effector, start, start_target, plane_point, press, started: true });
@@ -883,7 +912,11 @@ impl PoserApp {
                         }
                     });
                 }
-                ik::two_bone_ik(sk, shapes.as_deref(), &mut fig.pose.locals, *root, *mid, *end, target, *hint);
+                let anatomical = guided && self.guided_two_bone(f, *root, *mid, *end, target, *hint);
+                let fig = &mut self.scene.figures[f];
+                if !anatomical {
+                    ik::two_bone_ik(sk, shapes.as_deref(), &mut fig.pose.locals, *root, *mid, *end, target, *hint);
+                }
                 let w2 = sk.evaluate(&fig.pose.locals, shapes.as_deref()).world;
                 let pr = sk.bones[*end].parent.map(|p| mat_rotation(&w2[p])).unwrap_or(Quat::IDENTITY);
                 let id = fig.id;

@@ -17,6 +17,7 @@ pub enum FigureSource {
     Human(poser_core::makehuman::HumanParams),
     Mannequin(MannequinParams),
     File { path: PathBuf, rig: Option<poser_rig::Markers> },
+    Prop(poser_core::props::PropKind),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -31,6 +32,9 @@ pub struct FigureFile {
     pub tint: Option<Vec4>,
     #[serde(default)]
     pub pins: Vec<usize>,
+    /// (index of the parent figure in this file, bone, offset).
+    #[serde(default)]
+    pub attach: Option<(usize, usize, Transform)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -63,8 +67,11 @@ impl PoserApp {
 
     pub fn save_scene(&self, path: &Path) -> Result<()> {
         let mut figures = vec![];
+        let mut saved_ids: Vec<u64> = vec![];
         for f in &self.scene.figures {
-            let source = if let Some(p) = self.humans.get(&f.id) {
+            let source = if let Some(k) = self.props.get(&f.id) {
+                FigureSource::Prop(*k)
+            } else if let Some(p) = self.humans.get(&f.id) {
                 FigureSource::Human(p.clone())
             } else if let Some(p) = self.mannequins.get(&f.id) {
                 FigureSource::Mannequin(p.clone())
@@ -83,7 +90,16 @@ impl PoserApp {
                 visible: f.visible,
                 tint: f.tint,
                 pins: self.pins.keys().filter(|(id, _)| *id == f.id).map(|(_, b)| *b).collect(),
+                attach: None,
             });
+            saved_ids.push(f.id);
+        }
+        // Attachments by index within the file (ids are not stable between sessions).
+        for (ff, id) in figures.iter_mut().zip(&saved_ids) {
+            let Some(a) = self.scene.figures.iter().find(|f| f.id == *id).and_then(|f| f.attachment) else { continue };
+            if let Some(pi) = saved_ids.iter().position(|x| *x == a.parent) {
+                ff.attach = Some((pi, a.bone, a.offset));
+            }
         }
         let file = SceneFile {
             version: 1,
@@ -110,11 +126,19 @@ impl PoserApp {
         self.humans.clear();
         self.rig_markers.clear();
         self.retargets.clear();
+        self.props.clear();
+        self.attach_sync.clear();
+        let mut loaded: Vec<(Option<u64>, Option<(usize, usize, Transform)>)> = vec![];
         let base = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let mut missing = vec![];
         for ff in file.figures {
             let mut human = None;
+            let mut prop = None;
             let (model, params, markers) = match &ff.source {
+                FigureSource::Prop(k) => {
+                    prop = Some(*k);
+                    (Arc::new(poser_core::props::build(*k)), None, None)
+                }
                 FigureSource::Human(h) => {
                     human = Some(h.clone());
                     (Arc::new(poser_core::makehuman::build(h)), None, None)
@@ -133,6 +157,7 @@ impl PoserApp {
                         }
                         Err(_) => {
                             missing.push(p.display().to_string());
+                            loaded.push((None, None));
                             continue;
                         }
                     }
@@ -163,6 +188,10 @@ impl PoserApp {
             if let Some(h) = human {
                 self.humans.insert(id, h);
             }
+            if let Some(k) = prop {
+                self.props.insert(id, k);
+            }
+            loaded.push((Some(id), ff.attach));
             if let Some(m) = markers {
                 self.rig_markers.insert(id, m);
             }
@@ -170,6 +199,16 @@ impl PoserApp {
                 if b < model.skeleton.len() {
                     self.toggle_pin(idx, b);
                 }
+            }
+        }
+        for (id, att) in &loaded {
+            let (Some(id), Some((pi, bone, offset))) = (id, att) else { continue };
+            let Some(Some(parent)) = loaded.get(*pi).map(|x| x.0) else { continue };
+            if let Some(i) = self.scene.index_of(*id) {
+                self.scene.figures[i].attachment = Some(poser_core::scene::Attachment { parent, bone: *bone, offset: *offset });
+                // Keep the saved offset (the stored transform is already in sync with it).
+                let t = self.scene.figures[i].transform;
+                self.attach_sync.insert(*id, t);
             }
         }
         self.scene.lights = file.lights;

@@ -6,7 +6,7 @@ import, auto-rig and pose your own characters.
 
 Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well on integrated graphics.
 
-**Status:** v0.2 (preview). Windows build on the [Releases](https://github.com/MarkCockerill12/3dModelPoser/releases) page.
+**Status:** v0.3 (preview). Windows build on the [Releases](https://github.com/MarkCockerill12/3dModelPoser/releases) page.
 
 ## Features
 - **Realistic default body** built from MakeHuman's CC0 assets: one continuous anatomical body (not segments) with
@@ -28,8 +28,13 @@ Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well o
     automatically; tick "Select every bone" for full rig access), then use the move / rotate / scale gizmos; the orange "donut" swings the elbow/knee while the
     hand/foot stays put; rotating one spine joint bends the whole spine smoothly.
   - Drag hands/feet to reach with IK, drag fingers to curl them, drag the hips with feet kept planted.
-  - Pins, joint-stress highlighting, mirror / flip, copy & paste poses.
+  - **Body and floor collision** (Guided mode): hands and feet slide over the body instead of passing through it,
+    and nothing goes through the floor. Arms and legs use an anatomical IK that picks a natural elbow/knee direction.
+  - Pins, joint-stress highlighting, mirror / flip, copy & paste poses, drop to floor.
   - Volume-preserving (dual-quaternion) skinning keeps shoulders, elbows and wrists from collapsing.
+- **Props**: 18 built-in props (cube, block, ball, pillar, cone, chair, stool, table, bench, stairs, wall, ramp,
+  sword, staff, bat, book, phone, cup). Hand-held props snap into a hand with the fingers curled round them, and any
+  object can be attached to a figure's hand, head, chest, hips or feet so it follows the pose.
 - **Pose from photo**: load a photo and the pose of the person is estimated offline (RTMPose, nothing is uploaded)
   and applied to your figure, with the photo shown behind it.
 - **Hands**: per-finger curl, spread and thumb-opposition sliders plus 15 hand presets.
@@ -37,10 +42,12 @@ Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well o
 - **Animation**: play/scrub clips from imported files, freeze any frame, and **retarget** animations from other files
   (e.g. Mixamo FBX) onto any humanoid.
 - **Rendering for artists**: clay, textured, toon, form, silhouette and x-ray shading; outlines; shadows; up to 4 lights
-  with time-of-day presets; perspective, orthographic, **dynamic perspective** (separate near/far FOV) and lens
+  with time-of-day presets; an **FOV slider** in the top bar (dolly zoom: the subject keeps its size while the
+  perspective gets more or less dramatic); perspective, orthographic, **dynamic perspective** (separate near/far FOV) and lens
   distortion; focal length and dutch angle; eye-level line, vanishing-point guides, rule-of-thirds grid; saved views;
   a **picture-in-picture** second view; a **reference image** behind or traced over the figure.
-- **Export** transparent PNGs at any resolution, posed models as GLB or OBJ, and **rigged models as GLB or FBX**
+- **Export** transparent PNGs at any resolution, **turntable sheets** (4-12 angles around the scene, optionally one file
+  each), posed models as GLB or OBJ, and **rigged models as GLB or FBX**
   (skeleton, skin weights and current pose; tested in Blender 5).
 - **Scenes** save to `.poser` files.
 

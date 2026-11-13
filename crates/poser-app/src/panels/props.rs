@@ -85,6 +85,19 @@ fn outliner(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
                     }
                 }
             });
+            ui.menu_button("+ Prop", |ui| {
+                ui.set_min_width(170.0);
+                for cat in ["Shapes", "Furniture", "Architecture", "Hand-held"] {
+                    ui.label(RichText::new(cat).weak());
+                    for k in poser_core::props::PropKind::ALL.into_iter().filter(|k| k.category() == cat) {
+                        let tip = if k.handheld() { "Placed in the selected figure's right hand" } else { "Placed next to the selected figure" };
+                        if ui.button(k.name()).on_hover_text(tip).clicked() {
+                            app.add_prop(k);
+                            ui.close();
+                        }
+                    }
+                }
+            });
         });
     });
     egui::ScrollArea::vertical().id_salt("outliner").max_height(150.0).show(ui, |ui| {
@@ -249,8 +262,10 @@ fn pose_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
         }
     });
     let humanoid = app.scene.figures[f].model.humanoid.is_valid();
-    if !app.scene.figures[f].model.has_skeleton() {
-        ui.label(RichText::new("This model has no skeleton yet. Auto-rigging is coming in the Rig tab.").color(Color32::from_rgb(255, 200, 120)));
+    if app.props.contains_key(&app.scene.figures[f].id) {
+        ui.label(RichText::new("Prop: W move, E rotate, S scale. Attach it to a hand below.").weak());
+    } else if !app.scene.figures[f].model.has_skeleton() {
+        ui.label(RichText::new("This model has no skeleton yet. Auto-rig it in the Rig tab.").color(Color32::from_rgb(255, 200, 120)));
     } else if !humanoid {
         ui.label(RichText::new("Custom (non-humanoid) rig: FK posing only; presets and IK need a humanoid.").weak());
     }
@@ -364,6 +379,8 @@ fn pose_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
         app.needs_render = true;
     }
     ui.checkbox(&mut app.opts.keep_feet_planted, "Keep feet planted when moving hips");
+    ui.add_enabled(app.opts.mode == crate::app::PoseMode::Guided, egui::Checkbox::new(&mut app.opts.collisions, "Body collision (limbs can't pass through)"));
+    ui.add_enabled(app.opts.mode == crate::app::PoseMode::Guided, egui::Checkbox::new(&mut app.opts.floor, "Floor collision"));
     if ui.checkbox(&mut app.scene.render.joint_stress, "Highlight stressed joints").changed() {
         *edited = true;
     }
@@ -390,6 +407,72 @@ fn pose_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
         t.rotation = Quat::from_rotation_y(yaw.to_radians());
         t.scale = Vec3::splat(scale);
         *edited = true;
+    }
+    if app.scene.figures[f].attachment.is_none() && ui.button("Drop to floor").on_hover_text("Move the figure so its lowest point rests on the floor").clicked() {
+        app.drop_to_floor(f);
+    }
+    attach_ui(app, ui, f);
+}
+
+/// "Attached to" picker: follow another figure's hand, head, hips...
+fn attach_ui(app: &mut PoserApp, ui: &mut egui::Ui, f: usize) {
+    use poser_core::humanoid::HumanBone as HB;
+    const SPOTS: [(HB, &str); 7] = [
+        (HB::RightHand, "right hand"),
+        (HB::LeftHand, "left hand"),
+        (HB::Head, "head"),
+        (HB::Chest, "chest"),
+        (HB::Hips, "hips"),
+        (HB::RightFoot, "right foot"),
+        (HB::LeftFoot, "left foot"),
+    ];
+    let fig = &app.scene.figures[f];
+    let current = fig.attachment.and_then(|a| {
+        let pi = app.scene.index_of(a.parent)?;
+        let p = &app.scene.figures[pi];
+        let spot = p.model.humanoid.human_of(a.bone).and_then(|h| SPOTS.iter().find(|s| s.0 == h)).map(|s| s.1.to_string());
+        Some(format!("{}: {}", p.name, spot.unwrap_or_else(|| p.model.skeleton.bones[a.bone].name.clone())))
+    });
+    let mut choice: Option<Option<(usize, usize)>> = None;
+    let mut hold: Option<(usize, bool)> = None;
+    let holders: Vec<usize> = (0..app.scene.figures.len()).filter(|i| *i != f && app.scene.figures[*i].model.humanoid.is_valid()).collect();
+    if holders.is_empty() {
+        return;
+    }
+    ui.separator();
+    ui.label(RichText::new("Attached to").strong());
+    egui::ComboBox::from_id_salt("attach").width(200.0).truncate().selected_text(current.clone().unwrap_or_else(|| "Nothing".into())).show_ui(ui, |ui| {
+        if ui.selectable_label(current.is_none(), "Nothing").clicked() {
+            choice = Some(None);
+        }
+        for &h in &holders {
+            let hf = &app.scene.figures[h];
+            for (hb, label) in SPOTS {
+                if let Some(b) = hf.model.humanoid.get(hb) {
+                    if ui.selectable_label(false, format!("{}: {label}", hf.name)).clicked() {
+                        choice = Some(Some((h, b)));
+                    }
+                }
+            }
+        }
+    });
+    if app.props.get(&app.scene.figures[f].id).is_some_and(|k| k.handheld()) {
+        ui.horizontal(|ui| {
+            let h = holders[0];
+            if ui.button("Hold in right hand").clicked() {
+                hold = Some((h, false));
+            }
+            if ui.button("Left hand").clicked() {
+                hold = Some((h, true));
+            }
+        });
+    }
+    if let Some(c) = choice {
+        app.set_attachment(f, c);
+    }
+    if let Some((h, left)) = hold {
+        app.push_undo("Hold prop");
+        app.put_in_hand(f, h, left);
     }
 }
 

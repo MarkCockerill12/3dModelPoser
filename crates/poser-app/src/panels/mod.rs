@@ -175,6 +175,25 @@ pub fn top_bar(app: &mut PoserApp, ui: &mut egui::Ui) {
                     app.needs_render = true;
                 }
             }
+            ui.separator();
+            // Quick field of view (wide = dramatic perspective, narrow = flat telephoto).
+            if !app.cam.is_ortho() {
+                ui.label("FOV").on_hover_text("Field of view. Wide (90°+) exaggerates perspective for dramatic shots; narrow flattens it. Camera tab has dynamic (Design Doll) perspective too.");
+                let mut deg = app.cam.fov_y.to_degrees();
+                let resp = ui.add(egui::Slider::new(&mut deg, 5.0..=150.0).suffix("°").max_decimals(0));
+                if resp.changed() {
+                    // Dolly zoom: move the camera so the subject keeps its size on screen.
+                    let new = deg.to_radians();
+                    app.cam.distance *= (app.cam.fov_y * 0.5).tan() / (new * 0.5).tan();
+                    app.cam.fov_y = new;
+                    app.cam_anim = None;
+                    app.needs_render = true;
+                }
+                resp.on_hover_text(format!("{:.0} mm lens", app.cam.focal_length_mm()));
+            }
+            if ui.button("Export image").on_hover_text("Save a PNG of the view, or a turntable sheet (Ctrl+Shift+S)").clicked() {
+                app.export.open = true;
+            }
         });
     });
 }
@@ -351,6 +370,23 @@ pub fn windows(app: &mut PoserApp, ctx: &egui::Context) {
             if ui.button("Save PNG...").clicked() {
                 if let Some(p) = rfd::FileDialog::new().add_filter("PNG", &["png"]).set_file_name("pose.png").save_file() {
                     app.export_image(p);
+                    app.export.open = false;
+                }
+            }
+            ui.separator();
+            ui.label(RichText::new("Turntable sheet").strong());
+            ui.horizontal(|ui| {
+                ui.label("Angles");
+                for n in [4u32, 6, 8, 12] {
+                    ui.selectable_value(&mut app.export.turntable_angles, n, n.to_string());
+                }
+            });
+            ui.checkbox(&mut app.export.turntable_separate, "Also save each angle as its own PNG");
+            ui.label(RichText::new("Orbits the camera around the scene at the current height and lens.").weak());
+            if ui.button("Save turntable...").clicked() {
+                if let Some(p) = rfd::FileDialog::new().add_filter("PNG", &["png"]).set_file_name("turntable.png").save_file() {
+                    let (n, sep) = (app.export.turntable_angles, app.export.turntable_separate);
+                    app.export_turntable(p, n, sep);
                     app.export.open = false;
                 }
             }

@@ -2,6 +2,7 @@
 
 mod app;
 mod armature;
+mod body;
 mod deform;
 mod gizmo;
 mod input;

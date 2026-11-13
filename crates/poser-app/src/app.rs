@@ -138,6 +138,10 @@ pub struct Options {
     pub emulate_3button: bool,
     pub show_rings: bool,
     pub keep_feet_planted: bool,
+    /// Guided: limbs can't pass through the body.
+    pub collisions: bool,
+    /// Guided: nothing goes through the floor (world y = 0).
+    pub floor: bool,
 }
 
 /// Interactive auto-rig session (marker placement).
@@ -175,6 +179,8 @@ pub struct ExportSettings {
     pub height: u32,
     pub transparent: bool,
     pub open: bool,
+    pub turntable_angles: u32,
+    pub turntable_separate: bool,
 }
 
 pub struct PoserApp {
@@ -241,6 +247,14 @@ pub struct PoserApp {
     pub hover_handle: Option<crate::gizmo::Handle>,
     /// Debug: export the viewport image after N frames, then quit.
     pub export_after: Option<(PathBuf, u32)>,
+    /// Body colliders per figure id, keyed by model pointer.
+    pub colliders: HashMap<u64, (usize, Option<Arc<poser_core::collision::BodyCollider>>)>,
+    /// Built-in props per figure id.
+    pub props: HashMap<u64, poser_core::props::PropKind>,
+    /// Last transform written to each attached figure (detects user edits).
+    pub attach_sync: HashMap<u64, poser_core::transform::Transform>,
+    /// Debug: (output, frames to wait) for --prop-test (turntable of a prop scene).
+    pub turntable_after: Option<(PathBuf, u32)>,
 }
 
 impl PoserApp {
@@ -286,6 +300,8 @@ impl PoserApp {
                 emulate_3button: true,
                 show_rings: true,
                 keep_feet_planted: true,
+                collisions: true,
+                floor: true,
             },
             clipboard: None,
             importing: vec![],
@@ -297,7 +313,7 @@ impl PoserApp {
             pins: HashMap::new(),
             mannequins: HashMap::new(),
             humans: HashMap::new(),
-            export: ExportSettings { width: 1920, height: 1080, transparent: true, open: false },
+            export: ExportSettings { width: 1920, height: 1080, transparent: true, open: false, turntable_angles: 8, turntable_separate: false },
             help_open: false,
             frame_ms: 0.0,
             body_presets: presets::body_presets(),
@@ -320,6 +336,10 @@ impl PoserApp {
             gizmo: GizmoMode::Rotate,
             hover_handle: None,
             export_after: None,
+            colliders: HashMap::new(),
+            props: HashMap::new(),
+            attach_sync: HashMap::new(),
+            turntable_after: None,
         };
         let idx = app.add_human(HumanParams::default(), "Human");
         app.sel = Selection { figure: Some(idx), bone: None };
@@ -357,6 +377,25 @@ impl PoserApp {
             app.export.transparent = false;
             app.export.width = 1600;
             app.export.height = 1000;
+            return app;
+        }
+        if let Some(i) = args.iter().position(|a| a == "--prop-test") {
+            // Debug: a posed figure holding a sword, seated props around, rendered as a turntable.
+            if let Some(p) = app.body_presets.iter().find(|p| p.name == "Relaxed stand").cloned() {
+                app.apply_pose_to(idx, &p, true);
+            }
+            app.sel = Selection { figure: Some(idx), bone: None };
+            app.add_prop(poser_core::props::PropKind::Sword);
+            app.sel = Selection { figure: Some(idx), bone: None };
+            app.add_prop(poser_core::props::PropKind::Chair);
+            app.sel = Selection { figure: Some(idx), bone: None };
+            app.add_prop(poser_core::props::PropKind::Table);
+            app.sel = Selection::default();
+            app.scene.render.show_joints = false;
+            app.export.width = 800;
+            app.export.height = 900;
+            app.export.transparent = false;
+            app.turntable_after = Some((PathBuf::from(&args[i + 1]), 4));
             return app;
         }
         if let Some(i) = args.iter().position(|a| a == "--preset-sheet") {
@@ -1394,6 +1433,18 @@ impl eframe::App for PoserApp {
                 ctx.request_repaint();
             }
         }
+        if let Some((path, n)) = self.turntable_after.take() {
+            if n == 0 {
+                self.frame_all(false);
+                self.cam_anim = None;
+                self.cam.set_yaw_pitch(0.0, -12f32.to_radians());
+                self.export_turntable(path, 8, false);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                self.turntable_after = Some((path, n - 1));
+                ctx.request_repaint();
+            }
+        }
         if let Some((path, n)) = self.selftest.take() {
             if n == 0 {
                 self.render_preset_sheet(&path);
@@ -1403,6 +1454,7 @@ impl eframe::App for PoserApp {
                 ctx.request_repaint();
             }
         }
+        self.sync_attachments();
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, frame));
     }
 }
