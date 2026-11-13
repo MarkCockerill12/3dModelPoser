@@ -36,6 +36,74 @@ pub fn rotate_model(model: &mut Model, q: Quat) {
 }
 
 /// Detect humanoid, fix facing so the character looks down +Z, compute bone axes and T-pose.
+fn hm_pos(model: &Model, w: &[Mat4], h: HumanBone) -> Option<Vec3> {
+    model.humanoid.get(h).map(|b| w[b].w_axis.truncate())
+}
+
+/// Game rips: an attachment bone (briefcase handle, weapon socket) parented to a hand but
+/// exported sitting at the model origin, because the game snaps it onto the hand at runtime.
+/// Put it where the game would: on its parent bone.
+fn snap_detached_attachments(model: &mut Model) {
+    let w = model.skeleton.rest_world();
+    // Body scale: hips to feet (hips_height isn't computed yet at this point).
+    let hm = &model.humanoid;
+    let y = |h: HumanBone| hm.get(h).map(|b| w[b].w_axis.truncate());
+    let hh = match (y(HumanBone::Hips), y(HumanBone::LeftFoot).or(y(HumanBone::RightFoot))) {
+        (Some(h), Some(f)) => (h - f).length(),
+        _ => return,
+    }
+    .max(1e-4);
+    let deforming = {
+        let mut d = vec![false; model.skeleton.len()];
+        for m in &model.meshes {
+            for (j, wt) in m.joints.iter().zip(&m.weights) {
+                for k in 0..4 {
+                    if wt[k] > 0.0 && (j[k] as usize) < d.len() {
+                        d[j[k] as usize] = true;
+                    }
+                }
+            }
+        }
+        d
+    };
+    let sk = &model.skeleton;
+    let subtree_deforms = |b: usize| (0..sk.len()).any(|i| deforming[i] && (i == b || sk.is_ancestor(b, i)));
+    let mut snap = vec![];
+    for (i, bone) in sk.bones.iter().enumerate() {
+        let Some(p) = bone.parent else { continue };
+        if model.humanoid.human_of(i).is_some() || model.humanoid.human_of(p).is_none() {
+            continue;
+        }
+        let pos = w[i].w_axis.truncate();
+        let ppos = w[p].w_axis.truncate();
+        // Body bones are never at the origin, so a child sitting there, far from its parent, is
+        // a detached socket.
+        if pos.length() < 0.05 * hh && (pos - ppos).length() > 0.4 * hh && subtree_deforms(i) {
+            snap.push(i);
+        }
+    }
+    for i in snap {
+        log::info!("snapping detached attachment bone {} onto its parent", model.skeleton.bones[i].name);
+        let p = model.skeleton.bones[i].parent.unwrap();
+        // Grip point: in the palm when the parent is a hand, else the parent joint itself.
+        let side = model.humanoid.human_of(p).map(|h| h.side());
+        let knuckle = match (model.humanoid.human_of(p), side) {
+            (Some(HumanBone::LeftHand), _) => hm_pos(model, &w, HumanBone::LeftMiddleProximal),
+            (Some(HumanBone::RightHand), _) => hm_pos(model, &w, HumanBone::RightMiddleProximal),
+            _ => None,
+        };
+        let pp = w[p].w_axis.truncate();
+        let grip = knuckle.map(|k| pp.lerp(k, 0.6)).unwrap_or(pp);
+        // Keep the orientation it was modelled in (a case hangs upright from its handle).
+        // Bind pose in skeleton space: the parent's rest skin matrix carries any unit/axis
+        // conversion the file applies to every bone.
+        let c = w[p] * model.skeleton.bones[p].inverse_bind;
+        let mut bind = c * model.skeleton.bones[i].inverse_bind.inverse();
+        bind.w_axis = grip.extend(1.0);
+        model.skeleton.bones[i].rest = poser_core::transform::Transform::from_mat4(&(w[p].inverse() * bind));
+    }
+}
+
 pub fn finalize(model: &mut Model) {
     if !model.has_skeleton() {
         return;
@@ -60,6 +128,9 @@ pub fn finalize(model: &mut Model) {
         for (h, b) in det.bones {
             model.humanoid.bones.entry(h).or_insert(b);
         }
+    }
+    if model.humanoid.is_valid() {
+        snap_detached_attachments(model);
     }
     // Facing: the character's left must point to +X.
     if model.humanoid.is_valid() {
@@ -91,5 +162,8 @@ pub fn finalize(model: &mut Model) {
         let mut m = std::mem::take(&mut model.humanoid);
         m.compute_tpose(&model.skeleton);
         model.humanoid = m;
+        // Game rigs: skin driven by cloth-sim / helper bones that hang off the root would stay
+        // behind when the body moves; let it follow the body underneath instead.
+        poser_core::edit::adopt_floating_weights(model);
     }
 }

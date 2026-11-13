@@ -201,7 +201,7 @@ impl PoserApp {
             }
         }
         self.push_undo("Pose from photo");
-        self.apply_pose_to(idx, &hp, true);
+        self.apply_library_pose(idx, &hp);
         // Show the photo behind the figure, seen from the front.
         if let Ok(img) = image::open(&job.path) {
             let img = img.to_rgba8();

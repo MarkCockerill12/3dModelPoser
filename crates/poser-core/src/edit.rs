@@ -140,6 +140,160 @@ pub fn remove_meshes(model: &Model, remove: &[usize]) -> Model {
     out
 }
 
+/// Game rigs often skin clothing to cloth-simulation or helper bones that hang off the root
+/// instead of the body (Source 2 `PHYS_cloth_*`). Posing the body would leave that skin behind
+/// (a jacket panel floating where it was). Every weight on such a bone is handed to the body
+/// skin nearest to the vertex, so the clothing follows the body underneath; a mesh that hangs
+/// entirely off such bones (a loose prop) moves rigidly with the closest body bone.
+/// Returns the number of vertices changed.
+pub fn adopt_floating_weights(model: &mut Model) -> usize {
+    use crate::humanoid::HumanBone;
+    let sk = &model.skeleton;
+    let Some(hips) = model.humanoid.get(HumanBone::Hips) else { return 0 };
+    let n = sk.len();
+    let on_body: Vec<bool> = (0..n).map(|b| b == hips || sk.is_ancestor(hips, b)).collect();
+    let rest = model.rest_positions();
+    // Floating share of every vertex.
+    let floating = |m: &Mesh, v: usize| -> f32 {
+        if !m.is_skinned() {
+            return 0.0;
+        }
+        (0..4).filter(|k| m.weights[v][*k] > 0.0 && !on_body.get(m.joints[v][*k] as usize).copied().unwrap_or(true)).map(|k| m.weights[v][k]).sum()
+    };
+    let mut any = false;
+    for m in &model.meshes {
+        if (0..m.positions.len()).any(|v| floating(m, v) > 1e-4) {
+            any = true;
+            break;
+        }
+    }
+    if !any {
+        return 0;
+    }
+    // Donors: vertices driven only by the body. Uniform grid for nearest-neighbour lookup.
+    let mut lo = Vec3::splat(f32::MAX);
+    let mut hi = Vec3::splat(f32::MIN);
+    for ps in &rest {
+        for p in ps {
+            lo = lo.min(*p);
+            hi = hi.max(*p);
+        }
+    }
+    let cell = ((hi - lo).max_element() / 48.0).max(1e-5);
+    let key = |p: Vec3| {
+        let c = ((p - lo) / cell).floor();
+        (c.x as i32, c.y as i32, c.z as i32)
+    };
+    let mut grid: HashMap<(i32, i32, i32), Vec<(usize, usize)>> = HashMap::new();
+    for (mi, m) in model.meshes.iter().enumerate() {
+        if !m.is_skinned() {
+            continue;
+        }
+        for v in 0..m.positions.len() {
+            if floating(m, v) <= 1e-4 {
+                grid.entry(key(rest[mi][v])).or_default().push((mi, v));
+            }
+        }
+    }
+    if grid.is_empty() {
+        return 0;
+    }
+    let nearest = |p: Vec3| -> Option<(usize, usize, f32)> {
+        let c = key(p);
+        let mut best: Option<(usize, usize, f32)> = None;
+        for r in 0..48i32 {
+            // Once something is found, one more ring is enough to be sure it is the closest.
+            if let Some(b) = best {
+                if (r as f32 - 1.0) * cell > b.2 {
+                    break;
+                }
+            }
+            for x in -r..=r {
+                for y in -r..=r {
+                    for z in -r..=r {
+                        if x.abs().max(y.abs()).max(z.abs()) != r {
+                            continue;
+                        }
+                        if let Some(list) = grid.get(&(c.0 + x, c.1 + y, c.2 + z)) {
+                            for &(mi, v) in list {
+                                let d = (rest[mi][v] - p).length();
+                                if best.is_none_or(|b| d < b.2) {
+                                    best = Some((mi, v, d));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        best
+    };
+    let donor = |mi: usize, v: usize, meshes: &[Mesh]| (meshes[mi].joints[v], meshes[mi].weights[v]);
+    let mut changed = 0;
+    let snapshot = model.meshes.clone();
+    for (mi, m) in model.meshes.iter_mut().enumerate() {
+        if !m.is_skinned() {
+            continue;
+        }
+        let nv = m.positions.len();
+        let fl: Vec<f32> = (0..nv).map(|v| floating(&snapshot[mi], v)).collect();
+        if fl.iter().all(|f| *f <= 1e-4) {
+            continue;
+        }
+        if fl.iter().all(|f| *f >= 0.999) {
+            // A loose object: follow the closest body bone rigidly.
+            let Some((dm, dv, _)) = (0..nv).step_by((nv / 2000).max(1)).filter_map(|v| nearest(rest[mi][v])).min_by(|a, b| a.2.total_cmp(&b.2)) else { continue };
+            let (j, w) = donor(dm, dv, &snapshot);
+            let k = (0..4).max_by(|a, b| w[*a].total_cmp(&w[*b])).unwrap_or(0);
+            for v in 0..nv {
+                m.joints[v] = [j[k], 0, 0, 0];
+                m.weights[v] = [1.0, 0.0, 0.0, 0.0];
+            }
+            changed += nv;
+            continue;
+        }
+        for v in 0..nv {
+            if fl[v] <= 1e-4 {
+                continue;
+            }
+            let Some((dm, dv, _)) = nearest(rest[mi][v]) else { continue };
+            let (dj, dw) = donor(dm, dv, &snapshot);
+            let mut acc: Vec<(u16, f32)> = vec![];
+            let mut add = |j: u16, w: f32| {
+                if w <= 0.0 {
+                    return;
+                }
+                match acc.iter_mut().find(|x| x.0 == j) {
+                    Some(x) => x.1 += w,
+                    None => acc.push((j, w)),
+                }
+            };
+            for k in 0..4 {
+                let j = m.joints[v][k];
+                if on_body.get(j as usize).copied().unwrap_or(false) {
+                    add(j, m.weights[v][k]);
+                }
+            }
+            for k in 0..4 {
+                add(dj[k], dw[k] * fl[v]);
+            }
+            acc.sort_by(|a, b| b.1.total_cmp(&a.1));
+            acc.truncate(4);
+            let total: f32 = acc.iter().map(|x| x.1).sum::<f32>().max(1e-6);
+            let mut j = [0u16; 4];
+            let mut w = [0f32; 4];
+            for (k, (bj, bw)) in acc.into_iter().enumerate() {
+                j[k] = bj;
+                w[k] = bw / total;
+            }
+            m.joints[v] = j;
+            m.weights[v] = w;
+            changed += 1;
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

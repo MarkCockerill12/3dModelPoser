@@ -169,6 +169,24 @@ impl Camera {
         self.pivot += (-self.right() * dx_px + self.up() * dy_px) * scale;
     }
 
+    /// Orbit around an arbitrary world point (keeps the view continuous: no jump).
+    pub fn orbit_about(&mut self, dx: f32, dy: f32, point: Vec3) {
+        let old_eye = self.eye();
+        let new_rot = (Quat::from_rotation_y(-dx) * self.rotation * Quat::from_axis_angle(Vec3::X, -dy)).normalize();
+        let r = new_rot * self.rotation.inverse();
+        let eye = point + r * (old_eye - point);
+        self.rotation = new_rot;
+        self.pivot = eye + self.forward() * self.distance;
+    }
+
+    /// Zoom keeping `point` (in the pivot's view plane) fixed on screen.
+    pub fn zoom_towards(&mut self, factor: f32, point: Vec3) {
+        let before = self.distance;
+        self.zoom(factor);
+        let k = self.distance / before.max(1e-9);
+        self.pivot += (point - self.pivot) * (1.0 - k);
+    }
+
     pub fn zoom(&mut self, factor: f32) {
         self.distance = (self.distance * factor).clamp(0.02, 1000.0);
     }
@@ -264,4 +282,29 @@ pub enum ViewAxis {
     Left,
     Top,
     Bottom,
+}
+
+#[cfg(test)]
+mod nav_tests {
+    use super::*;
+
+    #[test]
+    fn orbit_about_pivot_matches_orbit() {
+        let mut a = Camera::default();
+        let mut b = a;
+        a.orbit(0.3, -0.2);
+        b.orbit_about(0.3, -0.2, b.pivot);
+        assert!((a.eye() - b.eye()).length() < 1e-4 && (a.pivot - b.pivot).length() < 1e-4);
+    }
+
+    #[test]
+    fn zoom_towards_keeps_point_on_screen() {
+        let mut c = Camera::default();
+        let size = Vec2::new(800.0, 600.0);
+        let point = c.pivot + c.right() * 0.3 + c.up() * 0.2;
+        let before = c.project(point, size).unwrap().0;
+        c.zoom_towards(0.5, point);
+        let after = c.project(point, size).unwrap().0;
+        assert!((before - after).length() < 0.5, "{before:?} -> {after:?}");
+    }
 }

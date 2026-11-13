@@ -6,7 +6,7 @@ import, auto-rig and pose your own characters.
 
 Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well on integrated graphics.
 
-**Status:** v0.3 (preview). Windows build on the [Releases](https://github.com/MarkCockerill12/3dModelPoser/releases) page.
+**Status:** v0.5 (preview). Windows build on the [Releases](https://github.com/MarkCockerill12/3dModelPoser/releases) page.
 
 ## Features
 - **Realistic default body** built from MakeHuman's CC0 assets: one continuous anatomical body (not segments) with
@@ -15,7 +15,9 @@ Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well o
   elderly, teen, child, toddler, heroic comic, anime, chibi, fashion...). Optional CC0 clothes, shoes, hats,
   10 hairstyles and 12 eyebrow styles that fit and follow every pose. The wooden art mannequin is still available.
 - **Import** GLB / glTF, VRM (0.x and 1.0), FBX, OBJ, PMX and PMD (MikuMikuDance) with textures, morphs and animations.
-  Drag and drop files onto the window. Odd unit scales are fixed and models are stood on the floor.
+  Drag and drop files onto the window. Odd unit scales are fixed and models are stood on the floor. Game rips are
+  cleaned up automatically: clothing driven by cloth-simulation bones follows the body, and attachment bones exported
+  at the origin (a briefcase handle) are put back in the hand.
 - **Rig detection** for Mixamo, VRoid/VRM, Unreal, MakeHuman, Rigify, 3ds Max Biped, Character Creator, Source engine
   and MMD (Japanese bone names) rigs, all mapped onto one standard humanoid skeleton.
 - **Auto-rig** static humanoid meshes (8 draggable markers, finger bones fitted per hand, bone-heat skin weights in
@@ -30,6 +32,7 @@ Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well o
   - Drag hands/feet to reach with IK, drag fingers to curl them, drag the hips with feet kept planted.
   - **Body and floor collision** (Guided mode): hands and feet slide over the body instead of passing through it,
     and nothing goes through the floor. Arms and legs use an anatomical IK that picks a natural elbow/knee direction.
+  - **Live symmetry**: pose one side and the other mirrors it. **Look at camera**: head and eyes follow the view.
   - Pins, joint-stress highlighting, mirror / flip, copy & paste poses, drop to floor.
   - Volume-preserving (dual-quaternion) skinning keeps shoulders, elbows and wrists from collapsing.
 - **Edit parts**: delete pieces of an imported model (a briefcase, hat or stray prop) by clicking them, by whole
@@ -41,11 +44,14 @@ Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well o
   and applied to your figure, with the photo shown behind it.
 - **Hands**: per-finger curl, spread and thumb-opposition sliders plus 15 hand presets.
 - **Library** with thumbnails: 17 full-body presets that work on *any* humanoid, plus your own saved poses. Poses are
-  checked against the joint limits and the figure is grounded automatically (kneeling, sitting and lying poses rest
+  checked against the joint limits and the figure is grounded automatically; a *Strength* slider blends a pose with
+  the current one (kneeling, sitting and lying poses rest
   on whatever the figure stood on; jumps hover).
 - **Animation**: play/scrub clips from imported files, freeze any frame, and **retarget** animations from other files
   (e.g. Mixamo FBX) onto any humanoid.
-- **Rendering for artists**: clay, textured, toon, form, silhouette and x-ray shading; outlines; shadows; up to 4 lights
+- **Colours**: skin-tone swatches for the default body and a colour per material for any model or prop (shown in
+  textured, clay and toon shading).
+- **Rendering for artists**: clay, textured, toon, form, **line art**, silhouette and x-ray shading; outlines; shadows; up to 4 lights
   with time-of-day presets; an **FOV slider** in the top bar (dolly zoom: the subject keeps its size while the
   perspective gets more or less dramatic); perspective, orthographic, **dynamic perspective** (separate near/far FOV) and lens
   distortion; focal length and dutch angle; eye-level line, vanishing-point guides, rule-of-thirds grid; saved views;
@@ -61,7 +67,7 @@ Written in Rust with a custom wgpu renderer: idles at 0% CPU/GPU and runs well o
 | Middle drag / Shift+middle / Ctrl+middle | Orbit / pan / zoom |
 | Right drag (Shift / Ctrl) | Orbit (pan / zoom) |
 | Left drag on empty space (Shift) | Orbit (pan) |
-| Wheel | Zoom |
+| Wheel | Zoom (towards the mouse pointer; option to orbit around the selection) |
 | Alt + left drag (+Shift / +Ctrl) | Orbit / pan / zoom without a middle button |
 | Touchpad two-finger drag, pinch | Orbit (Shift: pan), zoom. Camera tab: "always zoom" for smooth-scroll mice |
 | 1 / 3 / 7 (Ctrl: opposite), 5 | Front / right / top view, perspective-ortho toggle |

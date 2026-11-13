@@ -246,6 +246,95 @@ impl PoserApp {
         true
     }
 
+    // ---- Live symmetry & look-at -------------------------------------------------------------
+
+    /// Live symmetry: copy the side `bone` belongs to onto the other side (mirrored).
+    pub fn mirror_live(&mut self, f: usize, bone: usize) {
+        if !self.opts.symmetry {
+            return;
+        }
+        let Some(h) = self.scene.figures.get(f).and_then(|fig| fig.model.humanoid.human_of(bone)) else { return };
+        let side = h.side();
+        if side == poser_core::humanoid::Side::Center {
+            return;
+        }
+        let Some(p) = self.current_human_pose(f) else { return };
+        let other = p.mirrored().filtered(|b| b.side() != side && b.side() != poser_core::humanoid::Side::Center);
+        let fig = &mut self.scene.figures[f];
+        let m = fig.model.clone();
+        let shapes = fig.shapes_opt().map(|s| s.to_vec());
+        poser_core::pose::apply_human_pose(&m.skeleton, &m.humanoid, &other, &mut fig.pose.locals, shapes.as_deref(), false);
+        fig.touch();
+    }
+
+    /// Head (with a little neck) and eyes turn to the camera for figures with look-at on.
+    pub fn update_look_at(&mut self) {
+        if self.look_at.is_empty() {
+            return;
+        }
+        let eye = self.cam.eye();
+        for f in 0..self.scene.figures.len() {
+            let fig = &self.scene.figures[f];
+            if !self.look_at.contains(&fig.id) || !fig.model.humanoid.is_valid() {
+                continue;
+            }
+            let target = fig.transform.to_mat4().inverse().transform_point3(eye);
+            if self.aim_head(f, target) {
+                self.scene.figures[f].touch();
+                self.needs_render = true;
+            }
+        }
+    }
+
+    fn aim_head(&mut self, f: usize, target: Vec3) -> bool {
+        let model = self.scene.figures[f].model.clone();
+        let (sk, hm) = (&model.skeleton, &model.humanoid);
+        if hm.tpose_world.len() != sk.len() {
+            return false;
+        }
+        let Some(head) = hm.get(H::Head) else { return false };
+        let mut changed = false;
+        // Neck takes 40% of the turn, the head the rest (each within its limits).
+        for (bone, share) in [(hm.get(H::Neck), 0.4f32), (Some(head), 1.0)] {
+            let Some(b) = bone else { continue };
+            let fig = &mut self.scene.figures[f];
+            let w = sk.evaluate(&fig.pose.locals, fig.shapes_opt()).world;
+            let nw = mat_rotation(&w[head]) * hm.tpose_world[head].inverse();
+            let cur = (nw * Vec3::Z).normalize();
+            let want = (target - pos(&w[head])).normalize_or_zero();
+            if want == Vec3::ZERO {
+                return false;
+            }
+            let q = Quat::from_rotation_arc(cur, want);
+            if q.angle_between(Quat::IDENTITY) < 2e-3 {
+                continue;
+            }
+            ik::rotate_bone_world(sk, &w, &mut fig.pose.locals, b, Quat::IDENTITY.slerp(q, share));
+            self.clamp_bone(f, b);
+            changed = true;
+        }
+        for e in [H::LeftEye, H::RightEye] {
+            let Some(b) = hm.get(e) else { continue };
+            let fig = &mut self.scene.figures[f];
+            let w = sk.evaluate(&fig.pose.locals, fig.shapes_opt()).world;
+            let parent_nw = sk.bones[b].parent.map(|p| mat_rotation(&w[p]) * hm.tpose_world[p].inverse()).unwrap_or(Quat::IDENTITY);
+            let want = (target - pos(&w[b])).normalize_or_zero();
+            // Eye rotation relative to the head, at most ~30 degrees off straight ahead.
+            let local_want = (parent_nw.inverse() * want).normalize_or(Vec3::Z);
+            let mut q = Quat::from_rotation_arc(Vec3::Z, local_want);
+            let a = q.angle_between(Quat::IDENTITY);
+            if a > 0.5 {
+                q = Quat::IDENTITY.slerp(q, 0.5 / a);
+            }
+            let nl = hm.to_local(sk, b, q);
+            if fig.pose.locals[b].rotation.angle_between(nl) > 1e-3 {
+                fig.pose.locals[b].rotation = nl;
+                changed = true;
+            }
+        }
+        changed
+    }
+
     // ---- Library poses ----------------------------------------------------------------------
 
     /// Lowest point of a figure's skin (world y), after bringing its deformation up to date.

@@ -379,6 +379,7 @@ fn pose_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
         app.needs_render = true;
     }
     ui.checkbox(&mut app.opts.keep_feet_planted, "Keep feet planted when moving hips");
+    ui.checkbox(&mut app.opts.symmetry, "Live symmetry (pose both sides at once)");
     ui.add_enabled(app.opts.mode == crate::app::PoseMode::Guided, egui::Checkbox::new(&mut app.opts.collisions, "Body collision (limbs can't pass through)"));
     ui.add_enabled(app.opts.mode == crate::app::PoseMode::Guided, egui::Checkbox::new(&mut app.opts.floor, "Floor collision"));
     if ui.checkbox(&mut app.scene.render.joint_stress, "Highlight stressed joints").changed() {
@@ -407,6 +408,18 @@ fn pose_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
         t.rotation = Quat::from_rotation_y(yaw.to_radians());
         t.scale = Vec3::splat(scale);
         *edited = true;
+    }
+    if humanoid {
+        let id = app.scene.figures[f].id;
+        let mut on = app.look_at.contains(&id);
+        if ui.checkbox(&mut on, "Look at camera (head and eyes follow the view)").changed() {
+            if on {
+                app.look_at.insert(id);
+            } else {
+                app.look_at.remove(&id);
+            }
+            app.needs_render = true;
+        }
     }
     if app.scene.figures[f].attachment.is_none() && ui.button("Drop to floor").on_hover_text("Move the figure so its lowest point rests on the floor").clicked() {
         app.drop_to_floor(f);
@@ -474,6 +487,69 @@ fn attach_ui(app: &mut PoserApp, ui: &mut egui::Ui, f: usize) {
         app.push_undo("Hold prop");
         app.put_in_hand(f, h, left);
     }
+}
+
+/// Per-material colours (and skin tones for the default body).
+fn colours_ui(app: &mut PoserApp, ui: &mut egui::Ui, f: usize, edited: &mut bool) {
+    use poser_core::glam::Vec4;
+    egui::CollapsingHeader::new(RichText::new("Colours").strong()).id_salt("colours").show(ui, |ui| {
+        let id = app.scene.figures[f].id;
+        let mats: Vec<(String, Vec4)> = app.scene.figures[f].model.materials.iter().map(|m| (m.name.clone(), m.base_color)).collect();
+        if app.humans.contains_key(&id) {
+            if let Some(skin) = mats.iter().position(|m| m.0 == "Skin") {
+                ui.label(RichText::new("Skin tone").weak());
+                ui.horizontal(|ui| {
+                    for (name, c) in [
+                        ("Porcelain", [0.96, 0.85, 0.79]),
+                        ("Light", [0.93, 0.78, 0.68]),
+                        ("Medium", [0.84, 0.65, 0.52]),
+                        ("Olive", [0.76, 0.60, 0.45]),
+                        ("Tan", [0.67, 0.48, 0.34]),
+                        ("Brown", [0.50, 0.34, 0.24]),
+                        ("Dark", [0.33, 0.22, 0.16]),
+                    ] {
+                        let col = egui::Color32::from_rgb((c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8);
+                        if ui.add(egui::Button::new("").fill(col).min_size(egui::vec2(20.0, 20.0))).on_hover_text(name).clicked() {
+                            let mc = &mut app.scene.figures[f].material_colors;
+                            if mc.len() <= skin {
+                                mc.resize(skin + 1, None);
+                            }
+                            mc[skin] = Some(Vec4::new(c[0], c[1], c[2], 1.0));
+                            *edited = true;
+                        }
+                    }
+                });
+            }
+        }
+        if app.scene.render.shading == poser_core::scene::Shading::Silhouette {
+            ui.label(RichText::new("Colours don't show in Silhouette shading.").weak());
+        }
+        egui::ScrollArea::vertical().id_salt("matlist").max_height(200.0).show(ui, |ui| {
+            for (mi, (name, base)) in mats.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let fig = &mut app.scene.figures[f];
+                    if fig.material_colors.len() <= mi {
+                        fig.material_colors.resize(mi + 1, None);
+                    }
+                    let mut c = fig.material_colors[mi].unwrap_or_else(|| {
+                        // Show the model's own colour (stored linear) as the starting point.
+                        let s = |x: f32| x.max(0.0).powf(1.0 / 2.2);
+                        Vec4::new(s(base.x), s(base.y), s(base.z), 1.0)
+                    });
+                    if rgba(ui, &mut c) {
+                        fig.material_colors[mi] = Some(c);
+                        *edited = true;
+                    }
+                    let custom = fig.material_colors[mi].is_some();
+                    if ui.add_enabled(custom, egui::Button::new("x").small()).on_hover_text("Back to the model's colour").clicked() {
+                        fig.material_colors[mi] = None;
+                        *edited = true;
+                    }
+                    ui.add(egui::Label::new(if name.is_empty() { format!("Material {mi}") } else { name.clone() }).truncate());
+                });
+            }
+        });
+    });
 }
 
 /// "Model parts": delete pieces of a model (briefcase, hat...) by clicking them.
@@ -609,6 +685,7 @@ fn body_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
         return;
     };
     parts_ui(app, ui, f);
+    colours_ui(app, ui, f, edited);
     let id = app.scene.figures[f].id;
     if let Some(mut p) = app.humans.get(&id).cloned() {
         use poser_core::makehuman::{HumanParams, age_to_years, years_to_age};
@@ -809,6 +886,11 @@ fn library_tab(app: &mut PoserApp, ui: &mut egui::Ui) {
         ui.label("Select a humanoid figure to apply poses.");
         return;
     };
+    ui.horizontal(|ui| {
+        ui.label("Strength");
+        ui.add(Slider::new(&mut app.pose_strength, 0.1..=1.0).fixed_decimals(2))
+            .on_hover_text("Below 1, the pose is blended with the current one (e.g. 0.5 = halfway)");
+    });
     let presets = app.body_presets.clone();
     let mut cats: Vec<String> = vec![];
     for p in &presets {
@@ -887,6 +969,13 @@ fn library_tab(app: &mut PoserApp, ui: &mut egui::Ui) {
                         full.rotations.insert(b, q);
                     }
                 }
+            }
+        }
+        if app.pose_strength < 0.999 {
+            if let Some(cur) = app.current_human_pose(f) {
+                let name = full.name.clone();
+                full = cur.blend(&full, app.pose_strength);
+                full.name = name;
             }
         }
         app.apply_library_pose(f, &full);
@@ -1056,6 +1145,8 @@ fn camera_tab(app: &mut PoserApp, ui: &mut egui::Ui) {
     });
     ui.checkbox(&mut app.opts.emulate_3button, "Alt + left drag navigates (no middle button)");
     ui.checkbox(&mut app.opts.drag_empty_orbits, "Left-drag empty space orbits (Shift: pan)");
+    ui.checkbox(&mut app.opts.zoom_to_mouse, "Zoom towards the mouse pointer");
+    ui.checkbox(&mut app.opts.orbit_selection, "Orbit around the selected joint / figure");
     ui.label(RichText::new("Right-drag also orbits (Shift pan, Ctrl zoom). Pinch zooms.").weak());
 }
 
@@ -1069,6 +1160,7 @@ fn render_tab(app: &mut PoserApp, ui: &mut egui::Ui, edited: &mut bool) {
             (Shading::Textured, "Textured"),
             (Shading::Toon, "Toon"),
             (Shading::Matcap, "Form"),
+            (Shading::LineArt, "Line art"),
             (Shading::Silhouette, "Silhouette"),
             (Shading::XRay, "X-ray"),
         ] {

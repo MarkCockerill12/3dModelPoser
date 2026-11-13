@@ -37,6 +37,8 @@ pub struct FigureFile {
     pub attach: Option<(usize, usize, Transform)>,
     #[serde(default)]
     pub part_edits: Vec<poser_core::scene::PartEdit>,
+    #[serde(default)]
+    pub material_colors: Vec<Option<Vec4>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,6 +96,7 @@ impl PoserApp {
                 pins: self.pins.keys().filter(|(id, _)| *id == f.id).map(|(_, b)| *b).collect(),
                 attach: None,
                 part_edits: f.part_edits.clone(),
+                material_colors: f.material_colors.clone(),
             });
             saved_ids.push(f.id);
         }
@@ -178,6 +181,7 @@ impl PoserApp {
             let fig = &mut self.scene.figures[idx];
             fig.name = ff.name;
             fig.part_edits = ff.part_edits.clone();
+            fig.material_colors = ff.material_colors.clone();
             fig.transform = ff.transform;
             if ff.locals.len() == model.skeleton.len() {
                 fig.pose.locals = ff.locals;

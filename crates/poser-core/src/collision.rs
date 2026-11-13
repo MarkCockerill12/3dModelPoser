@@ -173,6 +173,13 @@ impl BodyCollider {
         let lateral = lr(H::LeftUpperArm, H::RightUpperArm).or(lr(H::LeftUpperLeg, H::RightUpperLeg)).unwrap_or(Vec3::X).normalize_or(Vec3::X);
         let up = (Vec3::Y - lateral * lateral.y).normalize_or(Vec3::Y);
         let depth_axis = lateral.cross(up).normalize_or(Vec3::Z);
+        // Body scale: hips height (fallback: overall height of the skeleton).
+        let scale = if hm.hips_height > 1e-6 {
+            hm.hips_height
+        } else {
+            let ys: Vec<f32> = rest.iter().map(|m| m.w_axis.y).collect();
+            (ys.iter().copied().fold(f32::MIN, f32::max) - ys.iter().copied().fold(f32::MAX, f32::min)).max(1e-3) * 0.53
+        };
         let mut caps = vec![];
         for (i, (h, end_h, part)) in LIST.iter().enumerate() {
             let Some(bone) = hm.get(*h) else { continue };
@@ -191,7 +198,32 @@ impl BodyCollider {
             };
             let d = tail - head;
             let len2 = d.length_squared();
-            let p = &pts[i];
+            // Anatomical upper bound on thickness (relative to hips height), so skin of held
+            // objects (a briefcase skinned to the hand) or loose clothing can't inflate a capsule.
+            let max_r = scale
+                * match h {
+                    H::Hips | H::Spine | H::Chest | H::UpperChest => 0.2,
+                    H::Head => 0.18,
+                    H::LeftUpperArm | H::RightUpperArm => 0.12,
+                    H::LeftLowerArm | H::RightLowerArm => 0.09,
+                    H::LeftHand | H::RightHand => 0.08,
+                    H::LeftUpperLeg | H::RightUpperLeg => 0.16,
+                    H::LeftLowerLeg | H::RightLowerLeg => 0.11,
+                    _ => 0.09,
+                };
+            let p: Vec<Vec3> = if *part == Part::Torso {
+                pts[i].iter().copied().filter(|v| (*v - head).length() < scale * 0.6).collect()
+            } else {
+                pts[i]
+                    .iter()
+                    .copied()
+                    .filter(|v| {
+                        let t = (*v - head).dot(d) / len2.max(1e-12);
+                        (-0.3..=1.3).contains(&t) && (*v - (head + d * t)).length() < max_r * 2.0
+                    })
+                    .collect()
+            };
+            let p = &p;
             if p.len() < 8 || len2 < 1e-10 {
                 continue;
             }
@@ -202,8 +234,8 @@ impl BodyCollider {
                 let mut dx: Vec<f32> = p.iter().map(|v| (*v - center).dot(lateral).abs()).collect();
                 let mut dz: Vec<f32> = p.iter().map(|v| (*v - center).dot(depth_axis).abs()).collect();
                 // Near the skin surface (the soft factor already lets limbs press in a little).
-                let radius = percentile(&mut dz, 0.88);
-                let half = (percentile(&mut dx, 0.9) - radius).max(0.0);
+                let radius = percentile(&mut dz, 0.88).min(max_r);
+                let half = (percentile(&mut dx, 0.9) - radius).clamp(0.0, scale * 0.3);
                 let inv = rest[bone].inverse();
                 caps.push(Capsule {
                     human: *h,
@@ -220,7 +252,7 @@ impl BodyCollider {
             }
             let mut ts: Vec<f32> = p.iter().map(|v| (*v - head).dot(d) / len2).collect();
             let mut rs: Vec<f32> = p.iter().zip(&ts).map(|(v, t)| (*v - (head + d * *t)).length()).collect();
-            let radius = percentile(&mut rs, 0.4);
+            let radius = percentile(&mut rs, 0.4).min(max_r);
             let (t_lo, t_hi) = (percentile(&mut ts, 0.05), percentile(&mut ts, 0.95));
             let pull = radius / len2.sqrt();
             let (mut ta, mut tb) = (t_lo + pull, t_hi - pull);

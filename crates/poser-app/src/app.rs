@@ -3,7 +3,7 @@ use crate::deform::DeformCache;
 use crate::gizmo::Ring;
 use crate::presets;
 use poser_core::camera::{Camera, Projection, ViewAxis};
-use poser_core::glam::{Quat, Vec3};
+use poser_core::glam::{Quat, Vec3, Vec4};
 use poser_core::humanoid::{HumanBone, JointLimit};
 use poser_core::makehuman::{self, HumanParams};
 use poser_core::mannequin::{self, MannequinParams};
@@ -126,6 +126,12 @@ pub struct Options {
     pub mode: PoseMode,
     pub scroll: ScrollMode,
     pub drag_empty_orbits: bool,
+    /// Posing one side poses the other side too (mirrored).
+    pub symmetry: bool,
+    /// Wheel / pinch zoom towards the mouse pointer (Blender "Zoom to Mouse Position").
+    pub zoom_to_mouse: bool,
+    /// Orbit around the selected joint / figure (Blender "Orbit Around Selection").
+    pub orbit_selection: bool,
     pub dual_quaternion: bool,
     /// Viewport resolution multiplier (lower = faster, less memory).
     pub render_scale: f32,
@@ -259,6 +265,10 @@ pub struct PoserApp {
     pub pose_lift: HashMap<u64, f32>,
     /// Edit-parts tool session.
     pub parts: Option<crate::parts::PartsSession>,
+    /// Figures whose head and eyes follow the camera.
+    pub look_at: std::collections::HashSet<u64>,
+    /// Library: how strongly a pose is applied (blend from the current pose).
+    pub pose_strength: f32,
 }
 
 impl PoserApp {
@@ -306,6 +316,9 @@ impl PoserApp {
                 keep_feet_planted: true,
                 collisions: true,
                 floor: true,
+                symmetry: false,
+                zoom_to_mouse: true,
+                orbit_selection: false,
             },
             clipboard: None,
             importing: vec![],
@@ -346,6 +359,8 @@ impl PoserApp {
             turntable_after: None,
             pose_lift: HashMap::new(),
             parts: None,
+            look_at: Default::default(),
+            pose_strength: 1.0,
         };
         let idx = app.add_human(HumanParams::default(), "Human");
         app.sel = Selection { figure: Some(idx), bone: None };
@@ -355,7 +370,18 @@ impl PoserApp {
             Ok("library") => app.props_tab = PropsTab::Library,
             Ok("body") => app.props_tab = PropsTab::Body,
             Ok("hands") => app.props_tab = PropsTab::Hands,
+            Ok("camera") => app.props_tab = PropsTab::Camera,
+            Ok("render") => app.props_tab = PropsTab::Render,
+            Ok("rig") => app.props_tab = PropsTab::Rig,
             _ => {}
+        }
+        // Debug: POSER_PROP=sword|chair adds a prop and selects it; POSER_PARTS=1 opens Edit parts.
+        if let Ok(k) = std::env::var("POSER_PROP") {
+            let kind = if k == "sword" { poser_core::props::PropKind::Sword } else { poser_core::props::PropKind::Chair };
+            app.add_prop(kind);
+        }
+        if std::env::var_os("POSER_PARTS").is_some() {
+            app.start_parts(idx);
         }
         if std::env::var_os("POSER_INSET").is_some() {
             let mut c = app.cam;
@@ -1152,6 +1178,29 @@ impl PoserApp {
                 self.add_human(hp, "Sheet")
             }
         };
+        // Debug: POSER_SHADING=textured|toon|clay, POSER_MATCOLOR="material:r,g,b" (sRGB).
+        match std::env::var("POSER_SHADING").as_deref() {
+            Ok("textured") => self.scene.render.shading = poser_core::scene::Shading::Textured,
+            Ok("toon") => self.scene.render.shading = poser_core::scene::Shading::Toon,
+            Ok("clay") => self.scene.render.shading = poser_core::scene::Shading::Solid,
+            Ok("lineart") => self.scene.render.shading = poser_core::scene::Shading::LineArt,
+            _ => {}
+        }
+        if let Ok(spec) = std::env::var("POSER_MATCOLOR") {
+            for one in spec.split(';') {
+                if let Some((m, c)) = one.split_once(':') {
+                    let v: Vec<f32> = c.split(',').filter_map(|x| x.parse().ok()).collect();
+                    if let (Ok(m), [r, g, b]) = (m.parse::<usize>(), v.as_slice()) {
+                        let mc = &mut self.scene.figures[idx].material_colors;
+                        if mc.len() <= m {
+                            mc.resize(m + 1, None);
+                        }
+                        mc[m] = Some(Vec4::new(*r, *g, *b, 1.0));
+                        self.scene.figures[idx].touch();
+                    }
+                }
+            }
+        }
         // Debug: POSER_PARTS_MESH=n selects mesh n, grows the selection and deletes it.
         if let Some(n) = std::env::var("POSER_PARTS_MESH").ok().and_then(|v| v.parse::<usize>().ok()) {
             self.cache.update(&self.scene, None, None);
@@ -1223,6 +1272,13 @@ impl PoserApp {
                         self.cam.frame(p + Vec3::new(-0.05, -0.1, 0.0), 0.32);
                     }
                 }
+            }
+            if std::env::var_os("POSER_LOOK").is_some() {
+                self.look_at.insert(self.scene.figures[idx].id);
+                for _ in 0..6 {
+                    self.update_look_at();
+                }
+                self.cache.update(&self.scene, None, None);
             }
             let draws = crate::viewport::build_draws(&self.scene, &self.cache, true);
             let desc = poser_render::FrameDesc {
@@ -1337,10 +1393,14 @@ impl PoserApp {
         let Some(path) = rfd::FileDialog::new().add_filter("glTF binary (.glb)", &ext[..1]).add_filter("FBX (.fbx)", &ext[1..]).set_file_name(format!("{}.glb", fig.name)).save_file() else { return };
         let morphs: Vec<(String, f32)> = fig.morph_names.iter().cloned().zip(fig.morph_weights.iter().copied()).collect();
         let is_fbx = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("fbx"));
+        // Bake the limb twist spread onto twist helper bones, so the export deforms as cleanly
+        // in other apps as it does here (joint positions are unchanged).
+        let pairs = poser_core::skinning::twist_split_pairs(&fig.model.skeleton, &fig.model.humanoid);
+        let export_locals = poser_core::skinning::apply_twist_split(&fig.model.skeleton, &pairs, &fig.pose.locals);
         let r = if is_fbx {
-            poser_io::export_fbx::write_fbx(&path, &fig.model, &fig.shapes, &fig.pose.locals, &fig.transform)
+            poser_io::export_fbx::write_fbx(&path, &fig.model, &fig.shapes, &export_locals, &fig.transform)
         } else {
-            poser_io::export_rigged::write_rigged_glb(&path, &fig.model, &fig.shapes, &fig.pose.locals, &morphs, &fig.transform)
+            poser_io::export_rigged::write_rigged_glb(&path, &fig.model, &fig.shapes, &export_locals, &morphs, &fig.transform)
         };
         self.status = match r {
             Ok(()) => format!("Exported rigged {} to {}", fig.name, path.display()),
@@ -1509,6 +1569,7 @@ impl eframe::App for PoserApp {
             }
         }
         self.sync_attachments();
+        self.update_look_at();
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, frame));
     }
 }

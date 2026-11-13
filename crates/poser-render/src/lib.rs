@@ -819,6 +819,7 @@ impl Renderer {
             Shading::Silhouette => 3.0,
             Shading::XRay => 4.0,
             Shading::Matcap => 5.0,
+            Shading::LineArt => 3.0,
         };
         let eye_pos = cam.eye();
         let clay = to_linear(s.clay_color);
@@ -834,7 +835,7 @@ impl Renderer {
             settings0: [shading, s.ambient, s.toon_threshold, s.rim],
             settings1: [
                 if s.shadows { 1.0 } else { 0.0 },
-                if s.outline { s.outline_width } else { 0.0 },
+                if s.outlines_on() { s.outline_width.max(1.0) } else { 0.0 },
                 0.0015,
                 if f.transparent { 1.0 } else { 0.0 },
             ],
@@ -969,7 +970,7 @@ impl Renderer {
         }
 
         // Info pass (outlines)
-        if f.settings.outline {
+        if f.settings.outlines_on() {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("info"),
                 color_attachments: &[

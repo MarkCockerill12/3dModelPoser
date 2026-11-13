@@ -159,7 +159,7 @@ impl Builder {
         }
     }
 
-    fn finish(self, name: &str, smooth: bool) -> Model {
+    fn finish(self, name: &str, smooth: bool, color: Vec3) -> Model {
         let mut mesh = Mesh {
             name: name.into(),
             positions: self.pos,
@@ -173,6 +173,8 @@ impl Builder {
         mesh.compute_normals();
         let mut m = Model::empty(name, SourceFormat::Procedural);
         m.meshes.push(mesh);
+        m.materials[0].name = name.into();
+        m.materials[0].base_color = color.extend(1.0);
         m
     }
 }
@@ -285,7 +287,18 @@ pub fn build(kind: PropKind) -> Model {
             b.frustum(v(0.0, -0.05, 0.0), 0.0, 0.035, 0.0, 24, true);
         }
     }
-    b.finish(kind.name(), smooth)
+    // Sensible starting colours (linear) for textured shading; editable per prop.
+    let color = match kind {
+        PropKind::Chair | PropKind::Stool | PropKind::Table | PropKind::Bench | PropKind::Staff | PropKind::Bat => v(0.33, 0.18, 0.08),
+        PropKind::Sword => v(0.6, 0.62, 0.66),
+        PropKind::Ball => v(0.75, 0.12, 0.08),
+        PropKind::Book => v(0.12, 0.2, 0.45),
+        PropKind::Phone => v(0.03, 0.03, 0.035),
+        PropKind::Cup => v(0.85, 0.85, 0.82),
+        PropKind::Wall | PropKind::Stairs | PropKind::Ramp | PropKind::Cylinder => v(0.6, 0.58, 0.55),
+        _ => v(0.7, 0.7, 0.7),
+    };
+    b.finish(kind.name(), smooth, color)
 }
 
 #[cfg(test)]

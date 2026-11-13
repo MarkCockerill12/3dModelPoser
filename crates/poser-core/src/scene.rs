@@ -62,6 +62,8 @@ pub struct Figure {
     pub attachment: Option<Attachment>,
     /// Pieces deleted from the model, in order (so scenes can redo them on load).
     pub part_edits: Vec<PartEdit>,
+    /// Per-material colour overrides (sRGB, indexed by material).
+    pub material_colors: Vec<Option<Vec4>>,
     /// Bumped whenever something that affects deformation changes.
     pub revision: u64,
     /// Generator parameters for procedural figures (serialised JSON), so they can be rebuilt.
@@ -92,6 +94,7 @@ impl Figure {
             anim: None,
             attachment: None,
             part_edits: vec![],
+            material_colors: vec![],
             revision: next_revision(),
             procedural: None,
         }
@@ -195,6 +198,15 @@ pub enum Shading {
     XRay,
     /// Show normals-based shading without lights (good for form reading).
     Matcap,
+    /// Flat white figure with outlines: clean line art to trace over.
+    LineArt,
+}
+
+impl RenderSettings {
+    /// Line art always draws outlines.
+    pub fn outlines_on(&self) -> bool {
+        self.outline || self.shading == Shading::LineArt
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

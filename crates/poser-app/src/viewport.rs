@@ -29,10 +29,13 @@ pub fn build_draws<'a>(scene: &'a Scene, cache: &'a DeformCache, export: bool) -
         for (mi, mesh) in f.model.meshes.iter().enumerate() {
             let Some(d) = c.meshes.get(mi) else { continue };
             let mat = &f.model.materials[mesh.material.min(f.model.materials.len() - 1)];
-            let tint = f.tint.unwrap_or(s.clay_color);
+            // A per-material colour chosen by the user wins over the model's and the clay colour.
+            let over = f.material_colors.get(mesh.material).copied().flatten();
+            let tint = over.or(f.tint).unwrap_or(s.clay_color);
             let (color, use_texture) = match s.shading {
-                Shading::Textured => (mat.base_color, true),
+                Shading::Textured => (over.map(to_linear).unwrap_or(mat.base_color), true),
                 Shading::Silhouette => (to_linear(s.outline_color), false),
+                Shading::LineArt => (poser_core::glam::Vec4::new(1.0, 1.0, 1.0, 1.0), false),
                 _ => (to_linear(tint) * poser_core::glam::Vec4::new(mat.clay_shade, mat.clay_shade, mat.clay_shade, 1.0), false),
             };
             out.push(MeshDraw {
@@ -49,7 +52,9 @@ pub fn build_draws<'a>(scene: &'a Scene, cache: &'a DeformCache, export: bool) -
                 world: c.world,
                 color,
                 use_texture,
-                object_id: (fi as u32 + 1) * 256 + mi as u32 % 256,
+                // One outline id per figure: seams between a model's own mesh pieces (texture
+                // chunks, pockets) are not edges; real creases come from depth/normal jumps.
+                object_id: fi as u32 + 1,
                 cast_shadow: true,
             });
         }
@@ -557,6 +562,17 @@ impl PoserApp {
                 println!("bone {i} {} <- {p} {:?}", b.name, m.humanoid.human_of(i));
             }
         }
+        if std::env::var_os("POSER_CAPS").is_some() {
+            if let Some(col) = self.collider(f) {
+                let w = self.scene.figures[f].evaluate().world;
+                for c in &col.caps {
+                    let (a, b) = col.segment(c, &w);
+                    println!("cap {:?} r {:.2} a {:.1?} b {:.1?}", c.human, c.radius, a, b);
+                }
+                let fig = &self.scene.figures[f];
+                println!("fig transform {:?}", fig.transform);
+            }
+        }
         if std::env::var_os("POSER_NOCOL").is_some() {
             self.opts.collisions = false;
             self.opts.floor = false;
@@ -624,15 +640,33 @@ impl PoserApp {
             let Some(bone) = self.scene.figures[f].model.humanoid.get(*hb) else { continue };
             let Some(Drag::Ik { kind, effector, start_target, .. }) = self.begin_ik(f, bone, Vec3::ZERO) else { continue };
             // Step the drag like the mouse does, re-solving from the start pose each frame.
+            // Offsets are for a 1.75 m figure: scale to this model's units.
+            let (lo, hi, _) = self.scene.figures[f].model.rest_extent();
+            let off = &(*off * ((hi - lo).max(1e-4) / 1.75));
+            let t0 = std::time::Instant::now();
+            self.opts.symmetry = std::env::var_os("POSER_SYM").is_some();
             for k in 1..=20 {
                 self.solve_drag(f, &kind, effector, start_target + *off * (k as f32 / 20.0), &start);
+                self.mirror_live(f, effector);
+                self.scene.figures[f].touch();
+                self.cache.update(&self.scene, None, None);
+            }
+            let ms = t0.elapsed().as_secs_f32() * 1000.0 / 20.0;
+            if self.opts.symmetry {
+                let fig = &self.scene.figures[f];
+                let hm = &fig.model.humanoid;
+                if let (Some(h), Some(m)) = (fig.model.humanoid.human_of(effector), hm.human_of(effector).and_then(|h| hm.get(h.mirror()))) {
+                    let w = fig.evaluate().world;
+                    let (a, b) = (w[effector].w_axis.truncate(), w[m].w_axis.truncate());
+                    println!("sym {h:?}: left {a:.3?} right {b:.3?} mirror error {:.4}", (a - Vec3::new(-b.x, b.y, b.z)).length());
+                }
             }
             let fig = &self.scene.figures[f];
             let mut p = poser_core::pose::extract_human_pose(&fig.model.skeleton, &fig.model.humanoid, &fig.pose.locals);
             p.name = format!("{hb:?} {off:?}");
             let pen = Self::collision_root(&kind).map(|r| self.raw_penetration(f, r)).unwrap_or((0.0, 0));
             let reached = (self.scene.figures[f].evaluate().world[effector].w_axis.truncate() - (start_target + *off)).length();
-            println!("drag {hb:?} {off:?}: penetration {:.3} m ({} contacts), miss {reached:.3} m", pen.0, pen.1);
+            println!("drag {hb:?} {off:?}: penetration {:.3} ({} contacts), miss {reached:.3}, {ms:.1} ms/frame", pen.0, pen.1);
             out.push(p);
         }
         self.scene.figures[f].pose.locals = base;
@@ -841,6 +875,7 @@ impl PoserApp {
                     self.ensure_undo("Rotate bone");
                     let ax = (self.scene.figures[f].transform.rotation.inverse() * axis_world).normalize();
                     self.rotate_on_axis(f, &[b], ax, phi);
+                    self.mirror_live(f, b);
                     // The arm keeps exactly the turn you asked for; the shoulder girdle follows it.
                     self.shoulder_rhythm(f);
                     self.solve_pins(f, Some(b));
@@ -863,6 +898,7 @@ impl PoserApp {
                 self.ensure_undo("Pose");
                 // Re-solve from the pose at the start of the drag (smooth + reversible).
                 self.solve_drag(figure, &kind, effector, target, &start);
+                self.mirror_live(figure, effector);
                 self.scene.figures[figure].touch();
                 self.stop_anim(figure);
                 self.drag = Some(Drag::Ik { figure, kind, effector, start, start_target, plane_point, press, started: true });
@@ -889,7 +925,7 @@ impl PoserApp {
                 if pan {
                     self.cam.pan(d.x, d.y, view.size().y);
                 } else {
-                    self.cam.orbit(d.x * 0.0085, d.y * 0.0085);
+                    self.orbit_view(d.x * 0.0085, d.y * 0.0085);
                 }
                 self.cam_anim = None;
                 self.drag = Some(Drag::Orbit { last: p, pan });
@@ -931,7 +967,9 @@ impl PoserApp {
                 if guided && is_arm && to_t.y > -0.25 && (target - w[*root].w_axis.truncate()).length() > reach * 0.96 {
                     let hm = &model.humanoid;
                     let sh = if matches!(hm.human_of(*end), Some(H::LeftHand)) { H::LeftShoulder } else { H::RightShoulder };
-                    let chain: Vec<usize> = [H::Spine, H::Chest, H::UpperChest, sh].iter().filter_map(|h| hm.get(*h)).collect();
+                    // With live symmetry a sideways spine lean can't be mirrored: collarbone only.
+                    let lean: &[H] = if self.opts.symmetry { &[] } else { &[H::Spine, H::Chest, H::UpperChest] };
+                    let chain: Vec<usize> = lean.iter().chain(&[sh]).filter_map(|h| hm.get(*h)).collect();
                     let limits: Vec<Option<poser_core::humanoid::JointLimit>> = chain.iter().map(|b| hm.human_of(*b).and_then(|h| h.default_limit())).collect();
                     let chain_c = chain.clone();
                     // Aim the shoulder joint (not the hand) a bit closer to the target.

@@ -187,6 +187,10 @@ pub fn load(path: &Path) -> Result<Model> {
             }
         }
     }
+    let moved = skel.align_rest_to_bind(&ibm_set);
+    if moved > 0 {
+        log::info!("glTF: moved {moved} displaced bones back to their bind pose");
+    }
     model.skeleton = skel;
 
     // ---- Materials / textures -----------------------------------------------------------

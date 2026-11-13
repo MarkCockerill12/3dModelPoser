@@ -74,8 +74,38 @@ impl PoserApp {
     }
 
     /// Viewport navigation. Returns true if the pointer interaction was consumed.
+    /// Orbit the view, around the selection if that option is on.
+    pub fn orbit_view(&mut self, dx: f32, dy: f32) {
+        match self.selection_point().filter(|_| self.opts.orbit_selection) {
+            Some(p) => self.cam.orbit_about(dx, dy, p),
+            None => self.cam.orbit(dx, dy),
+        }
+    }
+
+    fn selection_point(&self) -> Option<Vec3> {
+        let f = self.sel.figure?;
+        let fig = self.scene.figures.get(f)?;
+        let c = self.cache.figs.get(&fig.id)?;
+        Some(match self.sel.bone {
+            Some(b) if b < c.pose.world.len() => c.world.transform_point3(c.pose.world[b].w_axis.truncate()),
+            _ => c.world.transform_point3(c.center),
+        })
+    }
+
+    /// Zoom, towards the mouse pointer if that option is on.
+    pub fn zoom_view(&mut self, factor: f32, view: &ViewCtx, pointer: Option<egui::Pos2>) {
+        match pointer.filter(|p| self.opts.zoom_to_mouse && view.rect.contains(*p)) {
+            Some(p) => {
+                let target = view.drag_point(p, self.cam.pivot);
+                self.cam.zoom_towards(factor, target);
+            }
+            None => self.cam.zoom(factor),
+        }
+    }
+
     pub fn handle_navigation(&mut self, ui: &egui::Ui, resp: &Response, view: &ViewCtx) -> bool {
         let mods = ui.input(|i| i.modifiers);
+        let pointer = ui.input(|i| i.pointer.latest_pos());
         let mut consumed = false;
         let nav = |app: &mut Self, delta: egui::Vec2, shift: bool, ctrl: bool| {
             if shift {
@@ -83,7 +113,7 @@ impl PoserApp {
             } else if ctrl {
                 app.cam.zoom((delta.y * 0.01).exp());
             } else {
-                app.cam.orbit(delta.x * ORBIT_SPEED, delta.y * ORBIT_SPEED);
+                app.orbit_view(delta.x * ORBIT_SPEED, delta.y * ORBIT_SPEED);
             }
             app.cam_anim = None;
         };
@@ -116,18 +146,18 @@ impl PoserApp {
                                 if modifiers.shift {
                                     self.cam.pan(-delta.x, -delta.y, view.size().y);
                                 } else {
-                                    self.cam.orbit(-delta.x * ORBIT_SPEED, -delta.y * ORBIT_SPEED);
+                                    self.orbit_view(-delta.x * ORBIT_SPEED, -delta.y * ORBIT_SPEED);
                                 }
                             }
-                            MouseWheelUnit::Point => self.cam.zoom((-delta.y * 0.004).exp()),
-                            MouseWheelUnit::Line => self.cam.zoom(0.88f32.powf(delta.y)),
-                            MouseWheelUnit::Page => self.cam.zoom(0.6f32.powf(delta.y)),
+                            MouseWheelUnit::Point => self.zoom_view((-delta.y * 0.004).exp(), view, pointer),
+                            MouseWheelUnit::Line => self.zoom_view(0.88f32.powf(delta.y), view, pointer),
+                            MouseWheelUnit::Page => self.zoom_view(0.6f32.powf(delta.y), view, pointer),
                         }
                         self.cam_anim = None;
                         consumed = true;
                     }
                     egui::Event::Zoom(z) => {
-                        self.cam.zoom(1.0 / z.max(0.01));
+                        self.zoom_view(1.0 / z.max(0.01), view, pointer);
                         self.cam_anim = None;
                         consumed = true;
                     }
@@ -446,6 +476,7 @@ impl PoserApp {
                         } else {
                             // Single axis: stays on that axis, stopping at the joint limit.
                             self.rotate_on_axis(m.figure, &[b], (fig_rot.inverse() * axis).normalize(), angle);
+                            self.mirror_live(m.figure, b);
                         }
                         self.solve_pins(m.figure, Some(b));
                     }

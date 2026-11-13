@@ -243,6 +243,56 @@ impl Skeleton {
     }
 
     /// Recompute inverse bind matrices from the current rest pose.
+    /// Make the rest pose match the bind pose for bones an exporter left displaced (e.g. a
+    /// game prop bone whose node transform puts a briefcase 60 cm from the hand). At rest every
+    /// bone's skin matrix should be the same (undeformed mesh); bones that disagree with the
+    /// transform most bones share are moved to where the mesh was bound. Bones must be ordered
+    /// parents-first. Returns how many bones were moved.
+    pub fn align_rest_to_bind(&mut self, has_bind: &[bool]) -> usize {
+        let n = self.bones.len();
+        let world = self.rest_world();
+        let d: Vec<Option<Mat4>> = (0..n).map(|b| has_bind.get(b).copied().unwrap_or(false).then(|| world[b] * self.bones[b].inverse_bind)).collect();
+        let ext = world.iter().map(|m| m.w_axis.truncate().length()).fold(0.0f32, f32::max).max(1e-3);
+        let close = |a: &Mat4, b: &Mat4| {
+            (0..3).all(|c| (a.col(c) - b.col(c)).truncate().length() <= 3e-3 * a.col(c).truncate().length().max(1e-6))
+                && (a.w_axis - b.w_axis).truncate().length() <= 3e-3 * ext
+        };
+        let cands: Vec<usize> = (0..n).filter(|b| d[*b].is_some()).collect();
+        if cands.len() < 2 || self.bones.iter().enumerate().any(|(i, b)| b.parent.is_some_and(|p| p >= i)) {
+            return 0;
+        }
+        let step = (cands.len() / 64).max(1);
+        let mut best = (0usize, cands[0]);
+        for &r in cands.iter().step_by(step) {
+            let c = cands.iter().filter(|b| close(&d[r].unwrap(), &d[**b].unwrap())).count();
+            if c > best.0 {
+                best = (c, r);
+            }
+        }
+        // Only when most bones agree (otherwise the file is consistent in its own way).
+        if best.0 * 2 < cands.len() || best.0 == cands.len() {
+            return 0;
+        }
+        let c = d[best.1].unwrap();
+        let mut fixed = 0;
+        let mut new_world: Vec<Mat4> = Vec::with_capacity(n);
+        for b in 0..n {
+            let pw = match self.bones[b].parent {
+                Some(p) => new_world[p],
+                None => self.root_transform,
+            };
+            if let Some(db) = d[b] {
+                if !close(&c, &db) {
+                    let want = c * self.bones[b].inverse_bind.inverse();
+                    self.bones[b].rest = Transform::from_mat4(&(pw.inverse() * want));
+                    fixed += 1;
+                }
+            }
+            new_world.push(pw * self.bones[b].rest.to_mat4());
+        }
+        fixed
+    }
+
     pub fn recompute_inverse_bind(&mut self) {
         let w = self.rest_world();
         for (b, m) in self.bones.iter_mut().zip(w) {
