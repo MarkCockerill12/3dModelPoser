@@ -843,13 +843,25 @@ impl PoserApp {
             let n = |b: usize| (mat_rotation(&w[b]) * hm.tpose_world[b].inverse()).normalize();
             let dir = n(ub) * Vec3::new(side, 0.0, 0.0);
             let local = n(cb).inverse() * dir;
+            // Scapulohumeral rhythm: the shoulder girdle takes roughly a third of the arm's
+            // elevation and follows it forwards (protraction) or back (retraction), so the
+            // deltoid and chest skin aren't stretched round a fixed shoulder.
             let elev = local.y.clamp(-1.0, 1.0).asin();
-            let fwd = local.z.clamp(-1.0, 1.0).asin();
-            let raise = ((elev - 0.35) * 0.45).clamp(0.0, 0.5);
-            let protract = (fwd * 0.18).clamp(-0.1, 0.25);
-            let d = Quat::from_rotation_z(raise * side) * Quat::from_rotation_y(-protract * side);
+            let horiz = (local.x * local.x + local.z * local.z).sqrt();
+            let fwd = local.z.atan2(local.x * side);
+            let raise = ((elev + 0.2) * 0.32).clamp(0.0, 0.55);
+            let protract = (fwd * 0.22 * horiz).clamp(-0.3, 0.45);
+            let total = Quat::from_rotation_z(raise * side) * Quat::from_rotation_y(-protract * side);
+            // Shoulder-blade helper between collarbone and upper arm (MakeHuman `shoulder01`).
+            let blade = sk.bones[ub].parent.filter(|p| *p != sb && hm.human_of(*p).is_none() && sk.bones[*p].parent == Some(sb));
             let keep = mat_rotation(&w[ub]);
-            fig.pose.locals[sb].rotation = hm.to_local(sk, sb, d);
+            match blade {
+                Some(bb) => {
+                    fig.pose.locals[sb].rotation = hm.to_local(sk, sb, Quat::IDENTITY.slerp(total, 0.6));
+                    fig.pose.locals[bb].rotation = hm.to_local(sk, bb, Quat::IDENTITY.slerp(total, 0.4));
+                }
+                None => fig.pose.locals[sb].rotation = hm.to_local(sk, sb, total),
+            }
             let w2 = sk.evaluate(&fig.pose.locals, shapes.as_deref()).world;
             let pr = sk.bones[ub].parent.map(|p| mat_rotation(&w2[p])).unwrap_or(Quat::IDENTITY);
             fig.pose.locals[ub].rotation = (pr.inverse() * keep).normalize();
@@ -1169,6 +1181,16 @@ impl PoserApp {
             } else {
                 self.cam.set_yaw_pitch(30f32.to_radians(), -10f32.to_radians());
                 self.cam.frame(c, r * if drag_test { 0.62 } else { 0.85 });
+                // Debug: POSER_FOCUS=yaw_degrees frames the left shoulder/arm close up.
+                if let Some(yaw) = std::env::var("POSER_FOCUS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|_| drag_test) {
+                    let fig = &self.scene.figures[idx];
+                    let cc = &self.cache.figs[&fig.id];
+                    if let Some(b) = fig.model.humanoid.get(poser_core::humanoid::HumanBone::LeftUpperArm) {
+                        let p = cc.world.transform_point3(cc.pose.world[b].w_axis.truncate());
+                        self.cam.set_yaw_pitch(yaw.to_radians(), -10f32.to_radians());
+                        self.cam.frame(p + Vec3::new(-0.05, -0.1, 0.0), 0.32);
+                    }
+                }
             }
             let draws = crate::viewport::build_draws(&self.scene, &self.cache, true);
             let desc = poser_render::FrameDesc {

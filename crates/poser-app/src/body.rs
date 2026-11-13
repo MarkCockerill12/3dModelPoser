@@ -95,6 +95,17 @@ impl PoserApp {
         self.contacts_below(f, root).iter().map(|c| c.depth).sum()
     }
 
+    /// Deepest penetration of the limb below `root` beyond the baseline (0 when collision is off).
+    pub fn collision_excess(&mut self, f: usize, root: usize, base: &Baseline) -> f32 {
+        if !self.collisions_on() {
+            return 0.0;
+        }
+        self.contacts_below(f, root)
+            .iter()
+            .map(|c| c.depth - base.iter().find(|(a, b, _)| *a == c.a && *b == c.b).map(|x| x.2).unwrap_or(0.0).max(0.0))
+            .fold(0.0, f32::max)
+    }
+
     /// Push the limb below `root` out of the body / floor by rotating `root` (Guided mode).
     pub fn resolve_collisions(&mut self, f: usize, root: usize, base: &Baseline) {
         if !self.collisions_on() {

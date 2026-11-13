@@ -201,8 +201,9 @@ impl BodyCollider {
                 let center = p.iter().copied().sum::<Vec3>() / n;
                 let mut dx: Vec<f32> = p.iter().map(|v| (*v - center).dot(lateral).abs()).collect();
                 let mut dz: Vec<f32> = p.iter().map(|v| (*v - center).dot(depth_axis).abs()).collect();
-                let radius = percentile(&mut dz, 0.7);
-                let half = (percentile(&mut dx, 0.85) - radius).max(0.0);
+                // Near the skin surface (the soft factor already lets limbs press in a little).
+                let radius = percentile(&mut dz, 0.88);
+                let half = (percentile(&mut dx, 0.9) - radius).max(0.0);
                 let inv = rest[bone].inverse();
                 caps.push(Capsule {
                     human: *h,
@@ -261,6 +262,10 @@ impl BodyCollider {
                 }
             }
             add(idx(ua), idx(H::Head));
+            // Upper arm against the torso below the shoulder and the other arm.
+            for t in [H::Chest, H::Spine, H::Hips, oua, ola] {
+                add(idx(ua), idx(t));
+            }
         }
         for (ul, ll, ft, oul, oll, oft) in [
             (H::LeftUpperLeg, H::LeftLowerLeg, H::LeftFoot, H::RightUpperLeg, H::RightLowerLeg, H::RightFoot),

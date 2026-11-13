@@ -124,3 +124,86 @@ pub fn deform(mesh: &Mesh, morph_weights: &[f32], skin: &[Mat4], rigid: Mat4, ou
         out.normals.par_iter_mut().with_min_len(4096).for_each(|n| *n = (nm * *n).normalize_or(Vec3::Y));
     }
 }
+
+/// Twist helper bones (e.g. MakeHuman `upperarm02`, `lowerarm02`) that should share the twist
+/// of their main limb bone: (main bone, helper, fraction of the twist the main bone keeps).
+pub fn twist_split_pairs(skel: &crate::skeleton::Skeleton, hm: &crate::humanoid::HumanoidMap) -> Vec<(usize, usize, f32)> {
+    use crate::humanoid::HumanBone as H;
+    let mut out = vec![];
+    if !hm.is_valid() {
+        return out;
+    }
+    for (main, next, keep) in [
+        (H::LeftUpperArm, H::LeftLowerArm, 0.5),
+        (H::RightUpperArm, H::RightLowerArm, 0.5),
+        (H::LeftLowerArm, H::LeftHand, 0.2),
+        (H::RightLowerArm, H::RightHand, 0.2),
+        (H::LeftUpperLeg, H::LeftLowerLeg, 0.5),
+        (H::RightUpperLeg, H::RightLowerLeg, 0.5),
+        (H::LeftLowerLeg, H::LeftFoot, 0.4),
+        (H::RightLowerLeg, H::RightFoot, 0.4),
+    ] {
+        let (Some(m), Some(n)) = (hm.get(main), hm.get(next)) else { continue };
+        // A single unmapped bone between the main bone and the next joint, lying on the main
+        // bone's axis, is a twist helper.
+        let Some(h) = skel.bones[n].parent.filter(|p| *p != m && skel.bones[*p].parent == Some(m) && hm.human_of(*p).is_none()) else { continue };
+        let t = skel.bones[h].rest.translation;
+        let axis = skel.bones[m].axis;
+        if t.length() < 1e-6 || t.normalize().dot(axis) < 0.98 {
+            continue;
+        }
+        out.push((m, h, keep));
+    }
+    out
+}
+
+/// Move part of each main limb bone's twist (about its own axis) onto its twist helper. Every
+/// other bone keeps exactly the same world transform, so this only changes how skin deforms.
+pub fn apply_twist_split(skel: &crate::skeleton::Skeleton, pairs: &[(usize, usize, f32)], locals: &[crate::transform::Transform]) -> Vec<crate::transform::Transform> {
+    let mut out = locals.to_vec();
+    for &(m, h, keep) in pairs {
+        let axis = skel.bones[m].axis;
+        let delta = (skel.bones[m].rest.rotation.inverse() * out[m].rotation).normalize();
+        let delta = if delta.w < 0.0 { -delta } else { delta };
+        let v = Vec3::new(delta.x, delta.y, delta.z);
+        let twist = 2.0 * v.dot(axis).atan2(delta.w);
+        let x = twist * (1.0 - keep);
+        if x.abs() < 1e-5 {
+            continue;
+        }
+        let r = Quat::from_axis_angle(axis, x);
+        out[m].rotation = (out[m].rotation * r.inverse()).normalize();
+        out[h].rotation = (r * out[h].rotation).normalize();
+        out[h].translation = r * out[h].translation;
+    }
+    out
+}
+
+#[cfg(test)]
+mod twist_tests {
+    use super::*;
+
+    #[test]
+    fn twist_split_keeps_joints_in_place() {
+        let m = crate::makehuman::build(&crate::makehuman::HumanParams::default());
+        let pairs = twist_split_pairs(&m.skeleton, &m.humanoid);
+        assert!(pairs.len() >= 4, "found {} twist helpers", pairs.len());
+        let mut locals = m.skeleton.rest_locals();
+        for &(b, _, _) in &pairs {
+            let ax = m.skeleton.bones[b].axis;
+            locals[b].rotation = locals[b].rotation * Quat::from_rotation_x(0.4) * Quat::from_axis_angle(ax, 1.1);
+        }
+        let split = apply_twist_split(&m.skeleton, &pairs, &locals);
+        let a = m.skeleton.evaluate(&locals, None).world;
+        let b = m.skeleton.evaluate(&split, None).world;
+        let helpers: Vec<usize> = pairs.iter().flat_map(|p| [p.0, p.1]).collect();
+        for i in 0..a.len() {
+            if helpers.contains(&i) {
+                // Position never changes; only the twist about the bone axis does.
+                assert!((a[i].w_axis - b[i].w_axis).length() < 1e-4, "bone {i} moved");
+                continue;
+            }
+            assert!(a[i].abs_diff_eq(b[i], 1e-4), "bone {i} ({}) changed", m.skeleton.bones[i].name);
+        }
+    }
+}

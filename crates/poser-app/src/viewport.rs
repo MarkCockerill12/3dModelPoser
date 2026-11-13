@@ -545,6 +545,13 @@ impl PoserApp {
     /// the real IK path and return the resulting poses for a contact sheet.
     pub fn drag_test_poses(&mut self, f: usize) -> Vec<poser_core::pose::HumanPose> {
         let base = self.scene.figures[f].pose.locals.clone();
+        if std::env::var_os("POSER_BONES").is_some() {
+            let m = &self.scene.figures[f].model;
+            for (i, b) in m.skeleton.bones.iter().enumerate() {
+                let p = b.parent.map(|p| m.skeleton.bones[p].name.clone()).unwrap_or_default();
+                println!("bone {i} {} <- {p} {:?}", b.name, m.humanoid.human_of(i));
+            }
+        }
         if std::env::var_os("POSER_NOCOL").is_some() {
             self.opts.collisions = false;
             self.opts.floor = false;
@@ -670,10 +677,29 @@ impl PoserApp {
         self.scene.figures[f].pose.locals = start.to_vec();
         let root = Self::collision_root(kind);
         let base = root.map(|r| self.contact_baseline(f, r)).unwrap_or_default();
-        self.apply_ik(f, kind, effector, target);
-        if let Some(r) = root {
-            self.resolve_collisions(f, r, &base);
+        let from = self.scene.figures[f].evaluate().world.get(effector).map(|m| m.w_axis.truncate()).unwrap_or(target);
+        let solve = |app: &mut Self, t: Vec3| {
+            app.scene.figures[f].pose.locals = start.to_vec();
+            app.apply_ik(f, kind, effector, t);
+            match root {
+                Some(r) => {
+                    app.resolve_collisions(f, r, &base);
+                    app.collision_excess(f, r, &base)
+                }
+                None => 0.0,
+            }
+        };
+        if solve(self, target) <= 0.01 {
+            return;
         }
+        // Still inside the body (the joints can't slide round it): stop at the furthest point
+        // along the drag that stays outside.
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        for _ in 0..7 {
+            let mid = (lo + hi) * 0.5;
+            if solve(self, from.lerp(target, mid)) <= 0.01 { lo = mid } else { hi = mid }
+        }
+        solve(self, from.lerp(target, lo));
     }
 
     fn ensure_undo(&mut self, label: &str) {
@@ -810,6 +836,8 @@ impl PoserApp {
                     self.ensure_undo("Rotate bone");
                     let ax = (self.scene.figures[f].transform.rotation.inverse() * axis_world).normalize();
                     self.rotate_on_axis(f, &[b], ax, phi);
+                    // The arm keeps exactly the turn you asked for; the shoulder girdle follows it.
+                    self.shoulder_rhythm(f);
                     self.solve_pins(f, Some(b));
                     self.scene.figures[f].touch();
                     self.stop_anim(f);
@@ -933,7 +961,16 @@ impl PoserApp {
                 self.clamp_bone(f, *root);
                 self.clamp_bone(f, *mid);
                 self.clamp_bone(f, *end);
-                self.shoulder_rhythm(f);
+                if is_arm && guided {
+                    // The shoulder follows the arm; then re-aim from the moved shoulder so the hand
+                    // still lands on the target.
+                    self.shoulder_rhythm(f);
+                    if anatomical && self.guided_two_bone(f, *root, *mid, *end, target, *hint) {
+                        self.clamp_bone(f, *root);
+                        self.clamp_bone(f, *mid);
+                        self.shoulder_rhythm(f);
+                    }
+                }
             }
             IkKind::Swing { root, end } => {
                 let a = w[*root].w_axis.truncate();

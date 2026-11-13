@@ -76,6 +76,12 @@ impl DeformCache {
             let c = self.figs.entry(f.id).or_default();
             if c.revision != f.revision {
                 c.pose = f.evaluate();
+                // Skin with limb twist spread onto twist helper bones (joints keep their place).
+                let pairs = poser_core::skinning::twist_split_pairs(&f.model.skeleton, &f.model.humanoid);
+                if !pairs.is_empty() {
+                    let split = poser_core::skinning::apply_twist_split(&f.model.skeleton, &pairs, &f.pose.locals);
+                    c.pose.skin = f.model.skeleton.evaluate(&split, f.shapes_opt()).skin;
+                }
             }
             evals.push(Some(c.pose.clone()));
         }
